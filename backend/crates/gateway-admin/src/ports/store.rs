@@ -88,6 +88,14 @@ pub type AdminStoreResult<T> = Result<T, AdminStoreError>;
 /// 账号目录与公共账号写操作。
 #[async_trait]
 pub trait AccountStore: Send + Sync {
+    async fn load_model_observations(
+        &self,
+        _account_ids: &[String],
+        _now: DateTime<Utc>,
+    ) -> AdminStoreResult<Vec<crate::model::model_degradation::ModelObservation>> {
+        Ok(Vec::new())
+    }
+
     async fn list_accounts(
         &self,
         query: AccountListQuery,

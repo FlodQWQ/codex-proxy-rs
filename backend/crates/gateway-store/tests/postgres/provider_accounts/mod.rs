@@ -4,6 +4,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+mod admin_adapter;
 mod quota_forecast;
 
 use chrono::{TimeDelta, Utc};

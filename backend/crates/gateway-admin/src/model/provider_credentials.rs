@@ -1094,6 +1094,7 @@ impl fmt::Debug for ProviderExport {
 /// 统一账号目录的一行完整结果。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountDirectoryItem {
+    pub model_degradation: Vec<super::model_degradation::ModelDegradation>,
     pub account: AccountRecord,
     /// Provider 提供的套餐展示名称；未识别到套餐时为空。
     pub plan_type_display: Option<String>,

@@ -59,6 +59,7 @@ pub(super) fn account_models_data(result: ProviderModels) -> AccountModelsData {
 
 pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> AccountView {
     let AccountDirectoryItem {
+        model_degradation,
         account,
         plan_type_display,
         projection,
@@ -77,6 +78,25 @@ pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> Ac
     }
     let (quota, refresh_token_expires_at) = account_quota_view(quota, cooldown, now);
     AccountView {
+        model_degradation: model_degradation
+            .into_iter()
+            .filter(|item| item.expires_at > now)
+            .map(|item| AccountModelDegradationView {
+                status: if item.recovered_at.is_some() {
+                    "mitigated"
+                } else {
+                    "degraded"
+                },
+                request_id: item.request_id,
+                routing_scope: item.routing_scope,
+                group_ids: item.group_ids,
+                sent_model: item.sent_model,
+                response_model: item.response_model,
+                detected_at: china_rfc3339(&item.detected_at),
+                expires_at: china_rfc3339(&item.expires_at),
+                recovered_at: item.recovered_at.as_ref().map(china_rfc3339),
+            })
+            .collect(),
         id: account.id.clone(),
         name: account.name,
         notes: account.notes,

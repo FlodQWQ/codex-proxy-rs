@@ -20,6 +20,7 @@ use crate::{
             AccountPageItem, AccountUpdateResult, AccountUsage, AccountUsageWindowQuery,
             AccountsUpdateResult, BatchUpdateAccounts, UpdateAccount,
         },
+        model_degradation::account_model_degradations,
         observability::TimeRange,
         provider_credentials::{
             AccountDirectoryItem, AccountDirectoryPage, AccountExportBundle, AccountPersonalInfo,
@@ -308,6 +309,15 @@ impl DefaultAccountsService {
             end: now,
         };
         let ids = vec![account.id.clone()];
+        let model_degradation = account_model_degradations(
+            self.accounts
+                .load_model_observations(&ids, now)
+                .await
+                .map_err(|error| map_store_error(error, "model observations"))?,
+            now,
+        )
+        .remove(&account.id)
+        .unwrap_or_default();
         let rolling_usage = self
             .accounts
             .load_account_usage(rolling_range, &ids)
@@ -342,6 +352,7 @@ impl DefaultAccountsService {
                     .and_then(|(window, _)| window.local_usage.clone())
             });
         Ok(AccountDirectoryItem {
+            model_degradation,
             plan_type_display: self.providers.resolve_account_plan(
                 stored.account.provider_kind.as_str(),
                 &mut stored.account.plan_type,
@@ -378,6 +389,13 @@ impl AccountsService for DefaultAccountsService {
             .iter()
             .map(|item| item.account.id.clone())
             .collect::<Vec<_>>();
+        let mut model_degradations = account_model_degradations(
+            self.accounts
+                .load_model_observations(&ids, now)
+                .await
+                .map_err(|error| map_store_error(error, "model observations"))?,
+            now,
+        );
         let rolling_usage = self
             .accounts
             .load_account_usage(rolling_range, &ids)
@@ -440,6 +458,9 @@ impl AccountsService for DefaultAccountsService {
                         .and_then(|(window, _)| window.local_usage.clone())
                 });
                 AccountDirectoryItem {
+                    model_degradation: model_degradations
+                        .remove(&item.account.id)
+                        .unwrap_or_default(),
                     plan_type_display: self.providers.resolve_account_plan(
                         item.account.provider_kind.as_str(),
                         &mut item.account.plan_type,

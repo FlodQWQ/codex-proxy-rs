@@ -266,6 +266,7 @@ pub struct AccountSummaryView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountView {
+    pub model_degradation: Vec<AccountModelDegradationView>,
     pub outbound_proxy_endpoint: Option<String>,
     pub id: String,
     pub name: String,
@@ -301,6 +302,20 @@ pub struct AccountView {
     pub updated_at_display: String,
     pub quota: AccountQuotaView,
     pub usage: AccountUsageView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountModelDegradationView {
+    pub status: &'static str,
+    pub request_id: String,
+    pub routing_scope: String,
+    pub group_ids: Vec<String>,
+    pub sent_model: String,
+    pub response_model: String,
+    pub detected_at: String,
+    pub expires_at: String,
+    pub recovered_at: Option<String>,
 }
 
 /// 容量估算仅供管理端展示；金额不是订阅账单或可消费余额。

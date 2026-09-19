@@ -119,6 +119,7 @@ export interface AccountModelAccess {
 }
 
 export interface Account {
+  modelDegradation?: AccountModelDegradation[]
   outboundProxyEndpoint: string | null
   id: string
   name: string
@@ -151,6 +152,18 @@ export interface Account {
   quota: AccountQuota
   usage: AccountUsage
   groups: AccountGroupRef[]
+}
+
+export interface AccountModelDegradation {
+  status: 'degraded' | 'mitigated'
+  requestId: string
+  routingScope: string
+  groupIds: string[]
+  sentModel: string
+  responseModel: string
+  detectedAt: string
+  expiresAt: string
+  recoveredAt: string | null
 }
 
 export interface AccountQuotaForecast {

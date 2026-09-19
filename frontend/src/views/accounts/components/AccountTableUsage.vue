@@ -28,6 +28,9 @@ const windows = computed(() => visibleSummaryQuotaWindows(props.account.quota.wi
           <div class="h-full rounded-full" :class="window.presentation.barClass" :style="window.presentation.barStyle" />
         </div>
         <span class="text-right font-mono tabular-nums" :class="window.presentation.percentTextClass">{{ window.usedPercentDisplay }}</span>
+        <span class="col-span-3 min-w-0 break-words text-cp-text-tertiary">
+          {{ window.compactLabel }} 重置：{{ window.resetAtDisplay || '未知' }}
+        </span>
       </div>
     </template>
     <span v-else class="text-cp-text-tertiary">{{ account.authenticationKind === 'api_key' ? '本地用量' : '额度待观测' }}</span>

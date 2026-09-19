@@ -1,5 +1,5 @@
 import type { BaseTableSort } from '@/components/base/BaseTable/columns'
-import { watchDebounced } from '@vueuse/core'
+import { useIntervalFn, watchDebounced } from '@vueuse/core'
 
 import { computed, onMounted, onScopeDispose, shallowRef, watch } from 'vue'
 import { getAccounts, refreshAccountQuota } from '@/api'
@@ -124,6 +124,12 @@ export function useAccountsQuery() {
   }
 
   onScopeDispose(() => quotaController?.abort())
+
+  // 只回读本地观测，让降智状态及时更新，不额外消耗上游配额。
+  useIntervalFn(() => {
+    if (document.visibilityState === 'visible' && !query.loading.value && !refreshingQuotas.value)
+      void query.execute({ background: true, silent: true })
+  }, 30_000)
 
   watchDebounced(
     searchQuery,

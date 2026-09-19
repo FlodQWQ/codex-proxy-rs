@@ -394,6 +394,60 @@ impl PgAdminAccountStore {
 
 #[async_trait]
 impl AccountStore for PgAdminAccountStore {
+    async fn load_model_observations(
+        &self,
+        account_ids: &[String],
+        now: DateTime<Utc>,
+    ) -> AdminStoreResult<Vec<gateway_admin::model::model_degradation::ModelObservation>> {
+        if account_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        validate_admin_account_ids(account_ids)
+            .map_err(|error| admin_store_error(ENTITY, error))?;
+        // 每组相同模型观测只需最新一条，避免把全部使用记录传回应用层。
+        let rows =
+            self.query_budget
+                .run("account model observations", async {
+                    sqlx::query(
+                "select distinct on (provider_account_ref, routing_scope, routing_group_refs,
+                    upstream_model_id, upstream_response_model, (outcome = 'succeeded'))
+                    id, provider_account_ref, routing_scope, routing_group_refs,
+                    upstream_model_id, upstream_response_model, started_at,
+                    outcome = 'succeeded' as succeeded
+                 from model_requests
+                 where provider_account_ref = any($1) and provider_kind = 'openai'
+                   and started_at > $2 and started_at <= $3 and completed_at <= $3
+                   and outcome <> 'running' and not compact
+                   and request_kind is distinct from 'prewarm'
+                   and endpoint not like '%/compact'
+                   and upstream_model_id is not null and upstream_response_model is not null
+                   and (coalesce(total_tokens, 0) > 0 or coalesce(cost_amount, 0) > 0)
+                 order by provider_account_ref, routing_scope, routing_group_refs,
+                    upstream_model_id, upstream_response_model, (outcome = 'succeeded'),
+                    started_at desc, id desc"
+            )
+            .bind(account_ids).bind(now - TimeDelta::hours(3)).bind(now)
+            .fetch_all(&self.pool).await
+            .map_err(|_| postgres_unavailable("account model observations"))
+                })
+                .await
+                .map_err(|error| admin_store_error(ENTITY, error))?;
+        rows.iter()
+            .map(|row| {
+                Ok(gateway_admin::model::model_degradation::ModelObservation {
+                    account_id: window_usage_value(row, "provider_account_ref")?,
+                    request_id: window_usage_value(row, "id")?,
+                    routing_scope: window_usage_value(row, "routing_scope")?,
+                    group_ids: window_usage_value(row, "routing_group_refs")?,
+                    sent_model: window_usage_value(row, "upstream_model_id")?,
+                    response_model: window_usage_value(row, "upstream_response_model")?,
+                    observed_at: window_usage_value(row, "started_at")?,
+                    succeeded: window_usage_value(row, "succeeded")?,
+                })
+            })
+            .collect()
+    }
+
     async fn list_accounts(
         &self,
         query: AdminAccountListQuery,
