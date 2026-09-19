@@ -125,7 +125,7 @@ function date(at?: number) {
         <BaseSwitch v-model="enabled" label="292 打票总开关" :disabled="loading || saving || !state" />
       </div>
       <BaseFormItem label="打票专用代理">
-        <BaseInput id="codex-harvest-proxy" v-model="proxyUrl" type="password" autocomplete="new-password" placeholder="完整 HTTP / SOCKS5h URL，留空保留已保存代理" :disabled="saving" />
+        <BaseInput id="codex-harvest-proxy" v-model="proxyUrl" type="text" autocomplete="off" :spellcheck="false" placeholder="完整 HTTP / SOCKS5h URL，留空保留已保存代理" :disabled="saving" />
       </BaseFormItem>
       <span v-if="state?.proxyConfigured" class="break-all text-cp-xs text-cp-text-secondary">已配置：{{ state.proxyEndpoint }}</span>
       <fieldset class="m-0 grid max-h-60 grid-cols-1 gap-2 overflow-auto border-0 p-0 sm:grid-cols-2">
