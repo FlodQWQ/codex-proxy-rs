@@ -383,6 +383,412 @@ fn started() -> GatewayEvent {
     GatewayEvent::Started(ResponseMeta::new("resp_test", "public-model"))
 }
 
+fn chat_wire(kind: &str, fields: Value) -> ProviderEvent {
+    let mut data = fields;
+    data["type"] = json!(kind);
+    ProviderEvent::canonical_with_wire(
+        Vec::new(),
+        ProtocolWireEvent::json("openai", Some(kind.to_owned()), data).unwrap(),
+    )
+}
+
+fn chat_terminal(output: Value) -> Value {
+    json!({"id":"resp_chat","model":"model-a","created_at":1234,"status":"completed","output":output,
+        "usage":{"input_tokens":20,"output_tokens":10,"total_tokens":30,"input_tokens_details":{"cached_tokens":5},"output_tokens_details":{"reasoning_tokens":2}}})
+}
+
+async fn chat_response(session: FakeSession, body: Value) -> axum::response::Response {
+    let execution = Arc::new(SessionExecution {
+        client: authenticated_client_for_provider("sk_correlation_test", "openai"),
+        session: Mutex::new(Some(Box::new(session))),
+    });
+    api_router(execution)
+        .await
+        .oneshot(
+            Request::post("/v1/chat/completions")
+                .header(AUTHORIZATION, "Bearer sk_correlation_test")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn chat_completions_json_preserves_text_tools_usage_and_commit() {
+    let trace = Arc::new(Trace::default());
+    let terminal = chat_terminal(json!([
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},
+        {"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":"{\"city\":\"上海\"}"}
+    ]));
+    let session = FakeSession::buffered_provider(
+        trace.clone(),
+        vec![chat_wire(
+            "response.completed",
+            json!({"response":terminal}),
+        )],
+    );
+    let response = chat_response(
+        session,
+        json!({"model":"model-a","messages":[{"role":"user","content":"hello"}]}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-gateway-request-id"], MODEL_REQUEST_ID);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+    assert_eq!(body["object"], "chat.completion");
+    assert_eq!(body["choices"][0]["message"]["content"], "hello");
+    assert_eq!(
+        body["choices"][0]["message"]["tool_calls"][0]["id"],
+        "call_1"
+    );
+    assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(body["usage"]["prompt_tokens_details"]["cached_tokens"], 5);
+    assert_eq!(
+        body["usage"]["completion_tokens_details"]["reasoning_tokens"],
+        2
+    );
+    assert_eq!(trace.snapshot(), vec!["collect", "commit"]);
+}
+
+#[tokio::test]
+async fn chat_completions_stream_text_usage_and_done_are_not_duplicated() {
+    let trace = Arc::new(Trace::default());
+    let message =
+        json!({"id":"msg_1","type":"message","content":[{"type":"output_text","text":"你好"}]});
+    let events = vec![
+        chat_wire(
+            "response.created",
+            json!({"response":{"id":"resp_chat","model":"model-a","created_at":1234}}),
+        ),
+        chat_wire(
+            "response.output_text.delta",
+            json!({"output_index":0,"content_index":0,"delta":"你"}),
+        ),
+        chat_wire(
+            "response.output_text.delta",
+            json!({"output_index":0,"content_index":0,"delta":"好"}),
+        ),
+        chat_wire(
+            "response.output_item.done",
+            json!({"output_index":0,"item":message}),
+        ),
+        chat_wire(
+            "response.completed",
+            json!({"response":chat_terminal(json!([message]))}),
+        ),
+    ];
+    let mut steps: Vec<_> = events
+        .into_iter()
+        .enumerate()
+        .map(|(i, event)| {
+            NextStep::Event(delivery_provider(
+                event,
+                if i == 0 {
+                    CommitRequirement::CommitBeforeDelivery
+                } else {
+                    CommitRequirement::AlreadyCommitted
+                },
+            ))
+        })
+        .collect();
+    steps.push(NextStep::FinalizeSuccess);
+    let response=chat_response(FakeSession::streaming(trace.clone(),steps),json!({"model":"model-a","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let events = parse_sse_events(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    assert_eq!(
+        std::str::from_utf8(&bytes)
+            .unwrap()
+            .matches("data: [DONE]\n\n")
+            .count(),
+        1
+    );
+    let chunks: Vec<Value> = events
+        .iter()
+        .filter(|e| e.data != "[DONE]")
+        .map(|e| serde_json::from_str(&e.data).unwrap())
+        .collect();
+    assert!(
+        chunks
+            .iter()
+            .all(|c| c["object"] == "chat.completion.chunk" && c["id"] == "resp_chat")
+    );
+    let text = chunks
+        .iter()
+        .filter_map(|c| {
+            c.pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
+        })
+        .collect::<String>();
+    assert_eq!(text, "你好");
+    assert_eq!(
+        chunks
+            .iter()
+            .filter(|c| c.pointer("/choices/0/finish_reason") == Some(&json!("stop")))
+            .count(),
+        1
+    );
+    assert_eq!(chunks.last().unwrap()["choices"], json!([]));
+    assert_eq!(chunks.last().unwrap()["usage"]["total_tokens"], 30);
+    assert!(!trace.is_cancelled());
+}
+
+#[tokio::test]
+async fn chat_completions_stream_tool_arguments_have_contiguous_indices() {
+    let tool = json!({"id":"fc_1","call_id":"call_1","type":"function_call","name":"weather","arguments":"{\"city\":\"Paris\"}"});
+    let events = vec![
+        chat_wire(
+            "response.created",
+            json!({"response":{"id":"resp_chat","model":"model-a"}}),
+        ),
+        chat_wire(
+            "response.output_item.added",
+            json!({"output_index":1,"item":tool}),
+        ),
+        chat_wire(
+            "response.function_call_arguments.delta",
+            json!({"output_index":1,"item_id":"fc_1","delta":"{\"city\":"}),
+        ),
+        chat_wire(
+            "response.function_call_arguments.delta",
+            json!({"output_index":1,"item_id":"fc_1","delta":"\"Paris\"}"}),
+        ),
+        chat_wire(
+            "response.output_item.done",
+            json!({"output_index":1,"item":tool}),
+        ),
+        chat_wire(
+            "response.completed",
+            json!({"response":chat_terminal(json!([{"type":"reasoning","summary":[]},tool]))}),
+        ),
+    ];
+    let mut steps: Vec<_> = events
+        .into_iter()
+        .enumerate()
+        .map(|(i, e)| {
+            NextStep::Event(delivery_provider(
+                e,
+                if i == 0 {
+                    CommitRequirement::CommitBeforeDelivery
+                } else {
+                    CommitRequirement::AlreadyCommitted
+                },
+            ))
+        })
+        .collect();
+    steps.push(NextStep::FinalizeSuccess);
+    let response = chat_response(
+        FakeSession::streaming(Arc::new(Trace::default()), steps),
+        json!({"model":"model-a","stream":true,"messages":[{"role":"user","content":"hi"}]}),
+    )
+    .await;
+    let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+    let events = parse_sse_events(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    let chunks: Vec<Value> = events
+        .iter()
+        .filter(|e| e.data != "[DONE]")
+        .map(|e| serde_json::from_str(&e.data).unwrap())
+        .collect();
+    let calls: Vec<_> = chunks
+        .iter()
+        .filter_map(|c| c.pointer("/choices/0/delta/tool_calls/0"))
+        .collect();
+    assert!(calls.iter().all(|call| call["index"] == 0));
+    assert_eq!(
+        calls.iter().filter(|call| call.get("id").is_some()).count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter_map(|call| call.pointer("/function/arguments").and_then(Value::as_str))
+            .collect::<String>(),
+        "{\"city\":\"Paris\"}"
+    );
+    assert_eq!(
+        chunks.last().unwrap()["choices"][0]["finish_reason"],
+        "tool_calls"
+    );
+    assert!(chunks.iter().all(|chunk| chunk.get("usage").is_none()));
+}
+
+#[tokio::test]
+async fn chat_completions_rejects_unsupported_options_before_execution() {
+    for extra in [
+        json!({"n":2}),
+        json!({"stop":["end"]}),
+        json!({"modalities":["audio"]}),
+        json!({"tools":[{"type":"custom"}]}),
+    ] {
+        let mut request = json!({"model":"model-a","messages":[{"role":"user","content":"hi"}]});
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let trace = Arc::new(Trace::default());
+        let response = chat_response(FakeSession::buffered(trace.clone(), vec![]), request).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(trace.snapshot().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn chat_completions_converts_compressed_multimodal_tool_history_and_records_endpoint() {
+    let observed = Arc::new(Mutex::new(None));
+    let execution = Arc::new(ContextCaptureExecution {
+        observed: observed.clone(),
+        client: authenticated_client_for_provider("sk_context_test", "openai"),
+    });
+    let payload = json!({"model":"model-a","messages":[
+        {"role":"system","content":"be helpful"},
+        {"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,test","detail":"low"}}]},
+        {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{}"}}]},
+        {"role":"tool","tool_call_id":"call_1","content":"sunny"}
+    ]});
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut gzip, payload.to_string().as_bytes()).unwrap();
+    let response = api_router(execution)
+        .await
+        .oneshot(
+            Request::post("/v1/chat/completions")
+                .header(AUTHORIZATION, "Bearer sk_context_test")
+                .header(CONTENT_ENCODING, "gzip")
+                .body(Body::from(gzip.finish().unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let captured = observed.lock().unwrap().clone().unwrap();
+    assert_eq!(captured.endpoint, "/v1/chat/completions");
+    let input = captured.input.unwrap();
+    assert_eq!(input[1]["content"][1]["type"], "input_image");
+    assert_eq!(input[2]["type"], "function_call");
+    assert_eq!(input[3]["type"], "function_call_output");
+    assert_eq!(input[3]["call_id"], "call_1");
+}
+
+#[tokio::test]
+async fn chat_completions_requires_auth_and_stream_disconnect_cancels_execution() {
+    let observed = Arc::new(Mutex::new(None));
+    let execution = Arc::new(ContextCaptureExecution {
+        observed,
+        client: authenticated_client_for_provider("sk_context_test", "openai"),
+    });
+    let response = api_router(execution)
+        .await
+        .oneshot(
+            Request::post("/v1/chat/completions")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let trace = Arc::new(Trace::default());
+    let response = chat_response(
+        FakeSession::streaming(
+            trace.clone(),
+            vec![
+                NextStep::Event(delivery_provider(
+                    chat_wire(
+                        "response.created",
+                        json!({"response":{"id":"resp_chat","model":"model-a"}}),
+                    ),
+                    CommitRequirement::CommitBeforeDelivery,
+                )),
+                NextStep::FinalizeCancelled,
+            ],
+        ),
+        json!({"model":"model-a","stream":true,"messages":[{"role":"user","content":"hi"}]}),
+    )
+    .await;
+    drop(response);
+    tokio::task::yield_now().await;
+    assert!(trace.is_cancelled());
+}
+
+#[tokio::test]
+async fn chat_completions_stream_failure_does_not_emit_success_finish() {
+    let trace = Arc::new(Trace::default());
+    let response = chat_response(
+        FakeSession::streaming(
+            trace,
+            vec![
+                NextStep::Event(delivery_provider(
+                    chat_wire(
+                        "response.created",
+                        json!({"response":{"id":"resp_chat","model":"model-a"}}),
+                    ),
+                    CommitRequirement::CommitBeforeDelivery,
+                )),
+                NextStep::Error(EngineError::ProviderMetadataMismatch),
+            ],
+        ),
+        json!({"model":"model-a","stream":true,"messages":[{"role":"user","content":"hi"}]}),
+    )
+    .await;
+    let bytes = to_bytes(response.into_body(), 100_000).await.unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    let chunks: Vec<Value> = parse_sse_events(text)
+        .unwrap()
+        .iter()
+        .map(|event| serde_json::from_str(&event.data).unwrap())
+        .collect();
+    assert!(chunks.iter().any(|chunk| chunk.get("error").is_some()));
+    assert!(!chunks.iter().any(|chunk| {
+        chunk
+            .pointer("/choices/0/finish_reason")
+            .is_some_and(|value| !value.is_null())
+    }));
+    assert_eq!(text.matches("data: [DONE]\n\n").count(), 1);
+}
+
+#[tokio::test]
+async fn chat_completions_terminal_only_stream_preserves_length_finish() {
+    let mut terminal = chat_terminal(
+        json!([{"type":"message","content":[{"type":"output_text","text":"partial"}]}]),
+    );
+    terminal["status"] = json!("incomplete");
+    terminal["incomplete_details"] = json!({"reason":"max_output_tokens"});
+    let response = chat_response(
+        FakeSession::streaming(
+            Arc::new(Trace::default()),
+            vec![
+                NextStep::Event(delivery_provider(
+                    chat_wire("response.incomplete", json!({"response":terminal})),
+                    CommitRequirement::CommitBeforeDelivery,
+                )),
+                NextStep::FinalizeSuccess,
+            ],
+        ),
+        json!({"model":"model-a","stream":true,"messages":[{"role":"user","content":"hi"}]}),
+    )
+    .await;
+    let bytes = to_bytes(response.into_body(), 100_000).await.unwrap();
+    let chunks: Vec<Value> = parse_sse_events(std::str::from_utf8(&bytes).unwrap())
+        .unwrap()
+        .iter()
+        .map(|event| serde_json::from_str(&event.data).unwrap())
+        .collect();
+    assert_eq!(
+        chunks
+            .iter()
+            .filter_map(|c| c
+                .pointer("/choices/0/delta/content")
+                .and_then(Value::as_str))
+            .collect::<String>(),
+        "partial"
+    );
+    assert_eq!(
+        chunks.last().unwrap()["choices"][0]["finish_reason"],
+        "length"
+    );
+}
+
 fn completed() -> GatewayEvent {
     GatewayEvent::Completed(ResponseMeta::new("resp_test", "public-model"))
 }

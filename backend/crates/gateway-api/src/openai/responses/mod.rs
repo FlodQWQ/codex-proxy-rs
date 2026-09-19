@@ -7,8 +7,8 @@ mod response;
 pub mod websocket;
 
 pub use error::{ProtocolError, ProtocolErrorBody, RequestDecodeError, ResponseEncodeError};
-pub(crate) use http::responses;
 pub(super) use http::{PendingExecution, request_client_context};
+pub(crate) use http::{chat_completions, responses};
 pub use http::{collect_execution_response, stream_execution_response};
 pub use request::{
     ContinuationIntent, DecodedResponsesRequest, OpenAiRequestHeaders, ResponsesRequestMetadata,

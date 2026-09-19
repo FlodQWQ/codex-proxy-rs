@@ -9,7 +9,7 @@ use axum::{
 use super::{
     images::{image_edits, image_generations},
     models::{model_detail, models},
-    responses::{responses, responses_websocket},
+    responses::{chat_completions, responses, responses_websocket},
     search::standalone_search,
 };
 
@@ -22,6 +22,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/v1/images/edits", post(image_edits))
         .route("/v1/alpha/search", post(standalone_search))
         .route("/v1/responses", get(responses_websocket).post(responses))
+        .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/models", get(models))
         // 官方 OpenAI 模型详情合同使用 path ID；它不属于 Admin API 约束。
         .route("/v1/models/{model_id}", get(model_detail))

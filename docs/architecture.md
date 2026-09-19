@@ -14,7 +14,7 @@ Codex Proxy RS 是单进程、单副本运行的多 Provider AI 网关，同时�
 - OpenAI 与 xAI 两个编译期 Provider；
 - PostgreSQL 持久化、Redis 协调状态以及 S3/R2 数据库备份。
 
-系统不提供 `/v1/chat/completions`，不存在 Provider Instance 层，也不支持通过复制应用容器进行多副本
+系统通过 `/v1/chat/completions` 提供 Chat 兼容投影，复用 Responses 执行与计量流程；不存在 Provider Instance 层，也不支持通过复制应用容器进行多副本
 扩容。Client Key 限定账号分组，而不是绑定某个 Provider；一次请求的 Provider 候选由账号范围、模型
 能力和运行时健康共同决定。
 

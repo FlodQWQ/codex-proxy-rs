@@ -24,6 +24,7 @@ use gateway_core::lifecycle::ConnectionGuard;
 use gateway_protocol::openai::sse::{DONE_SSE_FRAME, response_failed_sse_event_with_id};
 
 use crate::ApiState;
+use crate::openai::chat::{self, ChatOptions, ChatStream};
 use crate::openai::{
     auth::{authenticate_client, client_access_error_response},
     error::{
@@ -47,16 +48,77 @@ pub(crate) async fn responses(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    execute_http(state, connect_info, ingress_id, headers, body, false).await
+}
+
+pub(crate) async fn chat_completions(
+    State(state): State<ApiState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    ingress_id: Option<Extension<tower_http::request_id::RequestId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    execute_http(state, connect_info, ingress_id, headers, body, true).await
+}
+
+async fn execute_http(
+    state: ApiState,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    ingress_id: Option<Extension<tower_http::request_id::RequestId>>,
+    headers: HeaderMap,
+    body: Bytes,
+    is_chat: bool,
+) -> Response {
     let service = state.openai();
     let client = match authenticate_client(service, &headers) {
         Ok(client) => client,
         Err(error) => return client_access_error_response(error),
     };
-    let decoded = match decode_request_with_headers(
-        &body,
-        &headers,
-        client.snapshot().responses_max_decompressed_body_bytes(),
-    ) {
+    let limit = client.snapshot().responses_max_decompressed_body_bytes();
+    let mut chat_options = None;
+    let mut decode_headers = headers.clone();
+    let converted;
+    let decode_body = if is_chat {
+        let plain = match super::request::decompress_request_body(&body, &headers, limit) {
+            Ok(plain) => plain,
+            Err(error) => {
+                return protocol_error_response(StatusCode::BAD_REQUEST, error.protocol_body());
+            }
+        };
+        let value = match serde_json::from_slice(&plain) {
+            Ok(value) => value,
+            Err(_) => {
+                return protocol_error_response(
+                    StatusCode::BAD_REQUEST,
+                    super::RequestDecodeError::MalformedJson.protocol_body(),
+                );
+            }
+        };
+        let (value, options) = match chat::convert_request(value) {
+            Ok(converted) => converted,
+            Err(error) => {
+                return protocol_error_response(
+                    StatusCode::BAD_REQUEST,
+                    super::ProtocolErrorBody {
+                        error: super::ProtocolError {
+                            kind: "invalid_request_error",
+                            code: "invalid_request",
+                            message: error.1.to_owned(),
+                            param: Some(error.0.to_owned()),
+                        },
+                    },
+                );
+            }
+        };
+        chat_options = Some(options);
+        converted = value.to_string().into_bytes();
+        decode_headers.remove(axum::http::header::CONTENT_ENCODING);
+        decode_headers.remove(axum::http::header::CONTENT_LENGTH);
+        converted.as_slice()
+    } else {
+        body.as_ref()
+    };
+    let decoded = match decode_request_with_headers(decode_body, &decode_headers, limit) {
         Ok(decoded) => decoded,
         Err(error) => {
             return protocol_error_response(StatusCode::BAD_REQUEST, error.protocol_body());
@@ -85,7 +147,11 @@ pub(crate) async fn responses(
             } else {
                 ClientTransport::HttpJson
             },
-            "/v1/responses",
+            if is_chat {
+                "/v1/chat/completions"
+            } else {
+                "/v1/responses"
+            },
         )
         .await
     {
@@ -102,10 +168,10 @@ pub(crate) async fn responses(
         stream, session, ..
     } = started;
     let response = if stream {
-        stream_execution_response(session, connection_guard).await
+        stream_execution_response_with_format(session, connection_guard, chat_options).await
     } else {
         drop(connection_guard);
-        collect_execution_response(session).await
+        collect_execution_response_with_format(session, chat_options).await
     };
     crate::openai::with_model_request_id(response, &request_id)
 }
@@ -161,6 +227,13 @@ const fn is_private_or_loopback(address: IpAddr) -> bool {
 
 /// 编码完整 canonical event 集合，并在完整 JSON 成功后提交下游。
 pub async fn collect_execution_response(session: Box<dyn ExecutionSession>) -> Response {
+    collect_execution_response_with_format(session, None).await
+}
+
+async fn collect_execution_response_with_format(
+    session: Box<dyn ExecutionSession>,
+    chat: Option<ChatOptions>,
+) -> Response {
     let mut execution = PendingExecution::new(session);
     let Some(session) = execution.session_mut() else {
         return internal_gateway_response("gateway response session is unavailable");
@@ -174,7 +247,7 @@ pub async fn collect_execution_response(session: Box<dyn ExecutionSession>) -> R
         }
     };
 
-    let encoded = match encode_collected_events(&events) {
+    let encoded = match encode_collected_events(&events, chat.as_ref()) {
         Ok(encoded) => encoded,
         Err(error) => {
             let response =
@@ -228,6 +301,7 @@ impl BufferedResponseEncodeError {
 
 fn encode_collected_events(
     events: &[ProviderEvent],
+    chat: Option<&ChatOptions>,
 ) -> Result<Vec<u8>, BufferedResponseEncodeError> {
     let mut encoder = OpenAiResponsesEncoder::new();
     for event in events {
@@ -236,6 +310,11 @@ fn encode_collected_events(
     let response = encoder
         .finish()
         .map_err(BufferedResponseEncodeError::Canonical)?;
+    let response = if let Some(options) = chat {
+        chat::complete_response(response, options)
+    } else {
+        response
+    };
     serde_json::to_vec(&response).map_err(|_| BufferedResponseEncodeError::Json)
 }
 
@@ -299,6 +378,14 @@ pub async fn stream_execution_response(
     session: Box<dyn ExecutionSession>,
     connection_guard: Option<Box<dyn ConnectionGuard>>,
 ) -> Response {
+    stream_execution_response_with_format(session, connection_guard, None).await
+}
+
+async fn stream_execution_response_with_format(
+    session: Box<dyn ExecutionSession>,
+    connection_guard: Option<Box<dyn ConnectionGuard>>,
+    chat: Option<ChatOptions>,
+) -> Response {
     let mut execution = PendingExecution::new(session);
     let Some(session) = execution.session_mut() else {
         return internal_gateway_response("gateway response session is unavailable");
@@ -328,12 +415,12 @@ pub async fn stream_execution_response(
         execution.cancel_and_finalize().await;
         return response;
     }
-    let mut encoder = OpenAiResponsesEncoder::new();
+    let mut encoder = ClientEncoder::new(chat);
     let mut frames = Vec::new();
     for event in &first_events {
         frames.extend(encoder.push_sse(event));
     }
-    if frames.is_empty() {
+    if frames.is_empty() || encoder.encoding_failed() {
         let response = internal_gateway_response("gateway commit batch encoded no output");
         let response = execution.record_response_status(response).await;
         execution.cancel_and_finalize().await;
@@ -470,11 +557,45 @@ impl Drop for PendingExecution {
     }
 }
 
+struct ClientEncoder {
+    responses: OpenAiResponsesEncoder,
+    chat: Option<ChatStream>,
+}
+
+impl ClientEncoder {
+    fn new(chat: Option<ChatOptions>) -> Self {
+        Self {
+            responses: OpenAiResponsesEncoder::new(),
+            chat: chat.map(ChatStream::new),
+        }
+    }
+    fn push_sse(&mut self, event: &ProviderEvent) -> Vec<Bytes> {
+        let frames = self.responses.push_sse(event);
+        if let Some(chat) = &mut self.chat {
+            chat.convert(frames, self.responses.response_id())
+        } else {
+            frames
+        }
+    }
+    fn is_completed(&self) -> bool {
+        self.responses.is_completed()
+    }
+    fn has_wire_failure(&self) -> bool {
+        self.responses.has_wire_failure()
+    }
+    fn response_id(&self) -> Option<&str> {
+        self.responses.response_id()
+    }
+    fn encoding_failed(&self) -> bool {
+        self.chat.as_ref().is_some_and(|chat| chat.failed)
+    }
+}
+
 struct ResponsesStreamState {
     trace: TraceContext,
     handed_off_bytes: u64,
     session: Option<Box<dyn ExecutionSession>>,
-    encoder: OpenAiResponsesEncoder,
+    encoder: ClientEncoder,
     pending: VecDeque<Bytes>,
     output_finished: bool,
     execution_terminal: bool,
@@ -484,7 +605,7 @@ struct ResponsesStreamState {
 impl ResponsesStreamState {
     fn new(
         session: Box<dyn ExecutionSession>,
-        encoder: OpenAiResponsesEncoder,
+        encoder: ClientEncoder,
         initial_frames: Vec<Bytes>,
         connection_guard: Option<Box<dyn ConnectionGuard>>,
     ) -> Self {
@@ -564,7 +685,13 @@ impl ResponsesStreamState {
 
     async fn push_event(&mut self, event: ProviderEvent) {
         let frames = self.encoder.push_sse(&event);
-        if self.encoder.is_completed() {
+        if self.encoder.encoding_failed() {
+            self.cancel_execution().await;
+            self.finish_with_gateway_error(GatewayError::new(
+                GatewayErrorKind::Internal,
+                "Failed to encode Chat response stream",
+            ));
+        } else if self.encoder.is_completed() {
             self.finish_completed(frames).await;
         } else {
             self.pending.extend(frames);
@@ -631,15 +758,26 @@ impl ResponsesStreamState {
 
     fn finish_with_gateway_error(&mut self, error: GatewayError) {
         let (_, default_type, default_code) = gateway_error_contract(error.kind());
-        self.pending
-            .push_back(Bytes::from(response_failed_sse_event_with_id(
+        let failure = if self.encoder.chat.is_some() {
+            Bytes::from(format!(
+                "data: {}\n\n",
+                serde_json::json!({"error":{
+                    "type":error.client_error_type().unwrap_or(default_type),
+                    "code":super::super::error::client_error_code(error.client_error_code().unwrap_or(default_code)),
+                    "message":error.client_message(),
+                }})
+            ))
+        } else {
+            Bytes::from(response_failed_sse_event_with_id(
                 self.encoder.response_id(),
                 error.client_error_type().unwrap_or(default_type),
                 super::super::error::client_error_code(
                     error.client_error_code().unwrap_or(default_code),
                 ),
                 error.client_message(),
-            )));
+            ))
+        };
+        self.pending.push_back(failure);
         self.pending
             .push_back(Bytes::from_static(DONE_SSE_FRAME.as_bytes()));
         self.output_finished = true;

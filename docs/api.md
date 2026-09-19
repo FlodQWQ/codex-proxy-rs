@@ -150,6 +150,7 @@ WebSocket message 和 frame 不设置网关私有长度上限；协议可接受�
 | 方法 | 路由 | 说明 |
 | --- | --- | --- |
 | `POST` | `/v1/responses` | OpenAI Responses JSON；`stream=true` 返回 SSE，否则返回完整 JSON |
+| `POST` | `/v1/chat/completions` | Chat Completions 兼容入口；普通 JSON 和 SSE 均转换到同一 Responses 执行流程 |
 | `GET` | `/v1/responses` | 通过 HTTP Upgrade 建立 Responses WebSocket |
 | `POST` | `/v1/alpha/search` | Codex standalone web search；JSON 请求与响应正文原样转发 |
 | `POST` | `/v1/images/generations` | 通过 OpenAI Provider 发起图像生成；JSON 请求与响应正文原样转发 |
@@ -159,6 +160,31 @@ WebSocket message 和 frame 不设置网关私有长度上限；协议可接受�
 
 Codex 的 review 等子代理请求仍使用 `/v1/responses`，并通过 `x-openai-subagent` 请求头携带子代理类型；
 网关不提供独立的子代理请求路径。
+
+### Chat Completions 兼容入口
+
+New API 的普通 OpenAI 渠道可使用 `/v1/chat/completions`，无需切换为 Responses 测试端点。
+鉴权仍使用 CPR Client Key；分组、模型映射、并发、额度、打票、用量记录及降智观测沿用原有执行流程，
+请求记录保留实际入站端点。此功能不是仅重写 URL，而是转换请求及响应格式。
+
+支持 `system` / `developer` / `user` / `assistant` 多轮消息、用户消息中的 `image_url` 图片输入、
+function 类型 `tools`、`tool_choice`、assistant `tool_calls` 和字符串形式的 tool 结果。
+支持 `max_tokens` / `max_completion_tokens` 到 `max_output_tokens` 的映射、`reasoning_effort`、
+`response_format` 的 text / json_object / json_schema 形式，以及底层 Responses 支持的采样和元数据字段。
+模型本身的参数限制仍由 Provider 和上游决定。
+例如 Codex OAuth 仍按既有适配规则移除上游不接受的 `max_output_tokens` 和 `temperature`，
+因此该类账号不保证 Chat 参数形成硬性的输出 Token 上限；此兼容入口没有额外改变 Provider 行为。
+
+普通请求返回 `chat.completion`；`stream=true` 返回 `chat.completion.chunk`，包含角色、文本、
+工具参数增量和 finish_reason，最后发送一次 `[DONE]`。`stream_options.include_usage=true` 时，
+结束前额外发送 `choices: []` 的用量块。普通 JSON 返回已知用量；不伪造上游缺失的 Token 数。
+可见的 reasoning summary 投影为兼容扩展 `reasoning_content`，拒绝内容投影为 `refusal`。
+客户端断开时取消并完成原执行的结算；流中失败返回 OpenAI 风格 error 数据帧，而非成功完成块。
+
+目前只支持 `n=1` 和文本输出，不支持音频、非 function 工具、legacy functions/function_call、
+stop、seed、logprobs 和非零惩罚参数；这些请求返回 400，不静默忽略。
+命名参与者不能无损转换，`messages.name` 返回 400。入站压缩采用与 Responses 相同的解压保护。
+原生 Responses / WebSocket / Images 接口及原样响应转发行为不变。
 
 `POST /v1/responses` 在鉴权后按 `Content-Encoding` 解压，再解析 JSON；支持单一 `gzip`、
 `deflate`（zlib 封装）和 `zstd`，缺省、空值或 `identity` 直接使用原始正文。gzip 多成员与 zstd
