@@ -114,6 +114,7 @@ pub(crate) struct CodexCyberPolicyScope {
 }
 
 pub struct CodexCredentialSelector {
+    tickets: Option<Arc<super::CodexTicketService>>,
     waiting: ConcurrencyWaitQueue<ProviderAccountId>,
     provider_kind: ProviderKind,
     repository: CodexCredentialRepository,
@@ -256,6 +257,10 @@ struct AffinityTelemetry {
 }
 
 impl CodexCredentialSelector {
+    pub(crate) fn with_tickets(mut self, tickets: Arc<super::CodexTicketService>) -> Self {
+        self.tickets = Some(tickets);
+        self
+    }
     #[must_use]
     // 选择器显式持有各能力边界，避免把 Provider 私有服务重新包装成通用容器。
     #[expect(clippy::too_many_arguments)]
@@ -271,6 +276,7 @@ impl CodexCredentialSelector {
     ) -> Self {
         Self {
             provider_kind,
+            tickets: None,
             repository,
             leases,
             session_affinity,
@@ -373,6 +379,12 @@ impl CodexCredentialSelector {
                 .into_iter()
                 .filter(|account| {
                     account.provider() == &self.provider_kind
+                        && upstream_model.is_none_or(|model| {
+                            !self
+                                .tickets
+                                .as_ref()
+                                .is_some_and(|tickets| tickets.blocks(account, model))
+                        })
                         && (diagnostic
                             || request
                                 .attempt

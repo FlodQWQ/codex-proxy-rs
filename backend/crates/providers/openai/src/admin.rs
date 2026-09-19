@@ -73,6 +73,7 @@ const PENDING_DOCUMENT_SCHEMA_VERSION: u64 = 3;
 
 /// OpenAI 对终态 Admin port 的唯一实现。
 pub(crate) struct OpenAiAdminProvider {
+    tickets: Option<Arc<crate::credential::CodexTicketService>>,
     provider_kind: ProviderKind,
     profile: CodexWireProfileState,
     accounts: Arc<dyn ProviderAccountStore>,
@@ -94,6 +95,13 @@ pub(crate) struct OpenAiAdminServices {
 }
 
 impl OpenAiAdminProvider {
+    pub(crate) fn with_tickets(
+        mut self,
+        tickets: Arc<crate::credential::CodexTicketService>,
+    ) -> Self {
+        self.tickets = Some(tickets);
+        self
+    }
     #[must_use]
     pub(crate) fn new(
         provider_kind: ProviderKind,
@@ -105,6 +113,7 @@ impl OpenAiAdminProvider {
     ) -> Self {
         Self {
             provider_kind,
+            tickets: None,
             profile,
             accounts,
             credentials: services.credentials,
@@ -163,6 +172,20 @@ impl OpenAiAdminProvider {
 
 #[async_trait]
 impl ProviderAdmin for OpenAiAdminProvider {
+    async fn codex_tickets(&self) -> Result<Value, ProviderAdminError> {
+        self.tickets
+            .as_ref()
+            .ok_or_else(|| provider_admin_error(ProviderAdminErrorKind::Unsupported))?
+            .view()
+            .await
+    }
+    async fn update_codex_tickets(&self, settings: Value) -> Result<Value, ProviderAdminError> {
+        self.tickets
+            .as_ref()
+            .ok_or_else(|| provider_admin_error(ProviderAdminErrorKind::Unsupported))?
+            .update(settings)
+            .await
+    }
     fn pricing_catalog(&self) -> gateway_admin::model::pricing::ProviderPricingCatalog {
         crate::transport::usage::pricing_catalog()
     }

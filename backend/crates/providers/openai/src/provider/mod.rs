@@ -106,6 +106,7 @@ use execution::*;
 pub use failure::openai_failure_affects_account_score;
 use failure::*;
 use observation::*;
+pub(crate) use workers::ticket_worker;
 pub(crate) use workers::worker_contributions;
 
 const PROVIDER_NAME: &str = "openai";
@@ -138,6 +139,7 @@ pub enum CodexProviderConfigError {
 }
 
 pub struct CodexProvider {
+    tickets: Option<Arc<crate::credential::CodexTicketService>>,
     selector: Arc<CodexCredentialSelector>,
     catalog: Arc<CodexCredentialCatalogService>,
     quota: Arc<CodexCredentialQuotaService>,
@@ -153,6 +155,13 @@ pub struct CodexProvider {
 }
 
 impl CodexProvider {
+    pub(crate) fn with_tickets(
+        mut self,
+        tickets: Arc<crate::credential::CodexTicketService>,
+    ) -> Self {
+        self.tickets = Some(tickets);
+        self
+    }
     fn client_for_request(
         &self,
         context: &AttemptContext,
@@ -192,6 +201,7 @@ impl CodexProvider {
         let client =
             CodexBackendClient::new(http, base_url, profile).with_websocket_pool(websocket_pool);
         Ok(Self {
+            tickets: None,
             selector,
             catalog,
             quota,
@@ -549,6 +559,17 @@ impl Provider for CodexProvider {
             lease.installation_id(),
             account_scope,
         );
+        if let Some(tickets) = &self.tickets {
+            if tickets.blocks(lease.account(), upstream_model.as_str()) {
+                return Err(provider_error(
+                    ProviderErrorKind::Unavailable,
+                    UpstreamSendState::NotSent,
+                ));
+            }
+            if let Some(ticket) = tickets.ticket(lease.account(), upstream_model.as_str()) {
+                upstream_request.turn_state = Some(ticket);
+            }
+        }
         // 每次执行从原始请求编码，选定出口后再覆盖，避免换号时携带上次位置。
         if let Some(location) = lease
             .account()

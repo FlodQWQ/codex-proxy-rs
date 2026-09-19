@@ -38,11 +38,12 @@ const emit = defineEmits<{
     <BaseIconButton
       variant="ghost"
       size="sm"
-      label="删除账号"
-      :disabled="deleting"
-      @click.stop="emit('delete', account)"
+      label="测试连接"
+      :loading="testing"
+      :disabled="testing"
+      @click.stop="emit('test', account)"
     >
-      <Trash2 class="size-3.5 text-cp-error" />
+      <Wifi class="size-3.5 text-cp-success-text" />
     </BaseIconButton>
 
     <BasePopover placement="bottom-end">
@@ -54,16 +55,6 @@ const emit = defineEmits<{
 
       <template #default="{ close }">
         <div class="w-40 p-1.5">
-          <BaseMenuItem
-            :loading="testing"
-            :disabled="testing"
-            @click.stop="(close(), emit('test', account))"
-          >
-            <template #icon>
-              <Wifi class="size-3.5 text-cp-text-quaternary" />
-            </template>
-            测试连接
-          </BaseMenuItem>
           <BaseMenuItem
             v-if="account.authenticationKind === 'oauth'"
             :loading="refreshing"
@@ -93,6 +84,15 @@ const emit = defineEmits<{
               <RotateCcw class="size-3.5 text-cp-text-quaternary" />
             </template>
             恢复状态
+          </BaseMenuItem>
+          <BaseMenuItem
+            :disabled="deleting"
+            @click.stop="(close(), emit('delete', account))"
+          >
+            <template #icon>
+              <Trash2 class="size-3.5 text-cp-error-text" />
+            </template>
+            删除账号
           </BaseMenuItem>
         </div>
       </template>

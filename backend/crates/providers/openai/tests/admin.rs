@@ -51,7 +51,7 @@ use secrecy::SecretString;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use uuid::Uuid;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::{
@@ -74,7 +74,7 @@ async fn openai_bundle_exposes_one_core_provider_and_drains_worker_contributions
     assert_eq!(bundle.core_provider().name(), "openai");
     assert_eq!(bundle.admin_provider().provider_kind().as_str(), "openai");
     let contributions = bundle.take_worker_contributions();
-    assert_eq!(contributions.len(), 7);
+    assert_eq!(contributions.len(), 8);
     assert!(
         contributions
             .iter()
@@ -1288,8 +1288,16 @@ fn reset_credit_command(account_id: ProviderAccountId) -> ConsumeProviderResetCr
 }
 
 fn initialized_provider_request(operation: Operation, account_id: &str) -> ProviderRequest {
+    initialized_model_request(operation, account_id, "gpt-5.4")
+}
+
+fn initialized_model_request(
+    operation: Operation,
+    account_id: &str,
+    model: &str,
+) -> ProviderRequest {
     let provider = ProviderKind::new("openai").expect("provider");
-    let upstream_model = UpstreamModelId::new("gpt-5.4").expect("upstream model");
+    let upstream_model = UpstreamModelId::new(model).expect("upstream model");
     let public_model = PublicModelId::new(upstream_model.as_str()).expect("public model");
     let account_scope = initialized_account_scope(account_id);
     let snapshot = RuntimeSnapshot::new(
@@ -1412,6 +1420,151 @@ fn account_record(account: &ProviderAccount) -> AccountRecord {
 struct TestOpenAiConfig {
     config: OpenAiConfig,
     _runtime: TempDir,
+}
+
+#[tokio::test]
+async fn codex_tickets_admin_preserves_secrets_rejects_stale_updates_and_paused_accounts_do_not_probe()
+ {
+    let store = Arc::new(MemoryAccountStore::default());
+    store
+        .seed_oauth_credential(ImportCodexOAuthCredential {
+            account_id: "acct_ticket_test".to_owned(),
+            name: "ticket test".to_owned(),
+            secret: secret("ticket-test-access"),
+            verified_account: profile("ticket-user"),
+            next_refresh_at: None,
+            enabled: false,
+        })
+        .await;
+    let config = valid_config();
+    let mut bundle = provider_openai::initialize(
+        config.config.clone(),
+        provider_ports_with(store.clone(), Arc::new(TestOAuthPending::default())),
+    )
+    .await
+    .unwrap();
+    let admin = bundle.admin_provider();
+    let initial = admin.codex_tickets().await.unwrap();
+    assert_eq!(initial["enabled"], json!(false));
+    let settings = json!({"enabled":true,"proxyUrl":"http://user:private-password@127.0.0.1:9","accountIds":["acct_ticket_test"],"revision":0});
+    let saved = admin.update_codex_tickets(settings.clone()).await.unwrap();
+    assert!(!saved.to_string().contains("private-password"));
+    assert!(!saved.to_string().contains("ticket-test-access"));
+    assert_eq!(saved["accounts"][0]["enabled"], json!(false));
+    assert_eq!(
+        admin
+            .update_codex_tickets(settings)
+            .await
+            .unwrap_err()
+            .kind(),
+        ProviderAdminErrorKind::Conflict
+    );
+    for contribution in bundle.take_worker_contributions() {
+        if let WorkerContribution::Registration(registration) = contribution {
+            if registration.id.owner() == "openai-codex-tickets" {
+                if let WorkerRunnable::Scheduled { task, .. } = registration.runnable {
+                    task.run_cycle(gateway_core::task::WorkerCycleContext::new(
+                        registration.id,
+                        None,
+                        CancellationToken::new(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+            }
+        }
+    }
+    assert_eq!(
+        admin.codex_tickets().await.unwrap()["accounts"][0]["models"][0]["attempts"],
+        json!(0)
+    );
+    let reload = provider_openai::initialize(
+        config.config.clone(),
+        provider_ports_with(store, Arc::new(TestOAuthPending::default())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reload.admin_provider().codex_tickets().await.unwrap()["proxyConfigured"],
+        json!(true)
+    );
+}
+
+#[tokio::test]
+async fn codex_tickets_gate_and_inject_only_selected_account_model() {
+    for valid_ticket in [true, false] {
+        let store = Arc::new(MemoryAccountStore::default());
+        let id = "acct_ticket_forward";
+        store
+            .seed_oauth_credential(ImportCodexOAuthCredential {
+                account_id: id.to_owned(),
+                name: "ticket forward".to_owned(),
+                secret: secret("ticket-forward-access"),
+                verified_account: profile("ticket-user"),
+                next_refresh_at: None,
+                enabled: true,
+            })
+            .await;
+        let server = MockServer::start().await;
+        let state = format!("gAAAAA{}", "B".repeat(286));
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .and(header("x-codex-turn-state", state.as_str()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(COMPLETED_SESSION_SSE),
+            )
+            .expect(if valid_ticket { 1 } else { 0 })
+            .mount(&server)
+            .await;
+        let mut config = valid_config();
+        config.config.api.base_url = server.uri();
+        let state_path = config._runtime.path().join("deploy/codex-tickets.json");
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        let cache = json!({"settings":{"enabled":true,"proxyUrl":"http://127.0.0.1:9","accountIds":[id],"revision":1},
+            "records":{format!("{id}/gpt-6-astra"):{"ticket":state,"expires":Utc::now().timestamp()+if valid_ticket {3600} else {-1},
+                "credential_revision":store.account(id).unwrap().revision().get(),"attempts":[]}}});
+        std::fs::write(state_path, serde_json::to_vec(&cache).unwrap()).unwrap();
+        let bundle = provider_openai::initialize(
+            config.config.clone(),
+            provider_ports_with(store, Arc::new(TestOAuthPending::default())),
+        )
+        .await
+        .unwrap();
+        let view = bundle.admin_provider().codex_tickets().await.unwrap();
+        assert_eq!(
+            view["accounts"][0]["models"][0]["ready"],
+            json!(valid_ticket)
+        );
+        assert_eq!(view["accounts"][0]["models"][1]["ready"], json!(false));
+        assert!(!view.to_string().contains("BBBBBBBB"));
+        let payload = ProtocolPayload::json_object(
+            "openai",
+            Map::from_iter([
+                ("model".to_owned(), json!("gpt-6-astra")),
+                ("input".to_owned(), json!("test")),
+            ]),
+        )
+        .unwrap()
+        .with_context(Map::from_iter([("use_websocket".to_owned(), json!(false))]));
+        let operation = Operation::Generate(GenerateRequest::from_protocol_payload(payload));
+        let result = bundle
+            .core_provider()
+            .execute(
+                initialized_model_request(operation, id, "gpt-6-astra"),
+                initialized_attempt_context("req_ticket_forward", id),
+            )
+            .await;
+        if valid_ticket {
+            let mut stream = result.expect("valid ticket forwards");
+            while let Some(event) = stream.next().await {
+                event.expect("mock response");
+            }
+        } else {
+            assert!(result.is_err());
+        }
+    }
 }
 
 fn valid_config() -> TestOpenAiConfig {

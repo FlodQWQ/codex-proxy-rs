@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { AccountGroup } from '@/api'
-import { Download, ListTodo, Pencil, Search, Trash2, Upload } from '@lucide/vue'
+import { Download, ListTodo, Pencil, RefreshCw, Search, Trash2, Upload } from '@lucide/vue'
 import { computed } from 'vue'
 
 import BaseButton from '@/components/base/BaseButton.vue'
+import BaseIconButton from '@/components/base/BaseIconButton.vue'
 import BaseInput from '@/components/base/BaseInput.vue'
 import BaseSelect from '@/components/base/BaseSelect.vue'
 import ProviderFilterSegmented from '@/components/ProviderFilterSegmented.vue'
@@ -17,6 +18,7 @@ const props = defineProps<{
   exportingAccounts: boolean
   groups: AccountGroup[]
   groupsLoading: boolean
+  loading: boolean
 }>()
 
 const emit = defineEmits<{
@@ -25,6 +27,7 @@ const emit = defineEmits<{
   importTasks: []
   create: []
   editSelected: []
+  refresh: []
 }>()
 
 const search = defineModel<string>('search', { required: true })
@@ -53,7 +56,8 @@ const groupOptions = computed(() => [
       <BaseInput
         v-model="search"
         placeholder="搜索账号"
-        class="col-span-2 min-w-0 sm:col-span-3 xl:w-80 xl:flex-none"
+        class="col-span-2 min-w-0 sm:col-span-3 xl:w-56 xl:flex-none"
+        aria-label="搜索账号名称或邮箱"
       >
         <template #prefix>
           <Search class="size-4.5 text-cp-text-tertiary" />
@@ -123,6 +127,9 @@ const groupOptions = computed(() => [
           <ListTodo class="size-4" />
           导入任务 <span v-if="activeImportCount" class="font-mono text-cp-link">{{ activeImportCount }}</span>
         </BaseButton>
+        <BaseIconButton label="刷新账号列表" variant="secondary" :loading="loading" @click="emit('refresh')">
+          <RefreshCw class="size-4" />
+        </BaseIconButton>
         <slot name="actions" />
         <BaseButton
           variant="primary"

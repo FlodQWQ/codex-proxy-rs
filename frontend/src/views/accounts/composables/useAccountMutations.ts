@@ -4,6 +4,7 @@ import type { RequestOptions } from '@/api/request'
 import dayjs from 'dayjs'
 import { ref, watch } from 'vue'
 import {
+  batchUpdateAccounts,
   deleteAccounts,
   exportAccounts,
   recoverAccount,
@@ -40,6 +41,7 @@ export function useAccountMutations(options: {
   const recoveringAccounts = useIdSet<string>()
   const refreshingAccounts = useIdSet<string>()
   const refreshingQuotaAccounts = useIdSet<string>()
+  const schedulingAccounts = useIdSet<string>()
   const deletingAccountAction = useAsyncAction()
   const batchDeletingAction = useAsyncAction()
   const exportingAccountsAction = useAsyncAction()
@@ -213,6 +215,23 @@ export function useAccountMutations(options: {
     return accounts
   }
 
+  async function handleToggleScheduling(account: AccountRow) {
+    await schedulingAccounts.run(account.id, async () => {
+      try {
+        // 只提交 enabled，避免旧列表快照覆盖代理、分组或模型设置。
+        await batchUpdateAccounts({
+          accountIds: [account.id],
+          enabled: !account.enabled,
+        })
+        await loadAccounts()
+        toast.success(account.enabled ? '已停止账号调度' : '已启用账号调度')
+      }
+      catch {
+        void loadAccounts().catch(() => undefined)
+      }
+    })
+  }
+
   async function deleteAccountBatch(accounts: AccountRow[], options?: RequestOptions) {
     const account = accounts[0]
     if (!account)
@@ -241,6 +260,8 @@ export function useAccountMutations(options: {
 
   return {
     ...onboarding,
+    schedulingAccountIds: schedulingAccounts.ids,
+    handleToggleScheduling,
     showDeleteModal,
     showSingleDeleteModal,
     pendingDeleteAccount,

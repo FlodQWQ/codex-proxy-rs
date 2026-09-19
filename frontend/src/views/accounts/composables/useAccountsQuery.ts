@@ -1,8 +1,9 @@
 import type { BaseTableSort } from '@/components/base/BaseTable/columns'
 import { watchDebounced } from '@vueuse/core'
 
-import { computed, onMounted, shallowRef, watch } from 'vue'
-import { getAccounts } from '@/api'
+import { computed, onMounted, onScopeDispose, shallowRef, watch } from 'vue'
+import { getAccounts, refreshAccountQuota } from '@/api'
+import { toast } from '@/components/base/BaseToast'
 import { usePagedQuery } from '@/composables/usePagedQuery'
 
 type AccountRow = Awaited<ReturnType<typeof getAccounts>>['items'][number]
@@ -13,6 +14,8 @@ export function useAccountsQuery() {
   const statusQuery = shallowRef('')
   const groupQuery = shallowRef('')
   const sort = shallowRef<BaseTableSort>()
+  const refreshingQuotas = shallowRef(false)
+  let quotaController: AbortController | undefined
   const accountSummary = shallowRef({
     total: 0,
     normal: 0,
@@ -74,6 +77,54 @@ export function useAccountsQuery() {
     return query.items.value.some(account => account.id === updated.id)
   }
 
+  async function refreshAccountsWithQuota() {
+    if (refreshingQuotas.value || query.loading.value)
+      return
+    refreshingQuotas.value = true
+    const controller = new AbortController()
+    quotaController = controller
+    try {
+      if (!await query.execute() || controller.signal.aborted)
+        return
+      const pending = query.items.value.filter(account => account.enabled && account.authenticationKind === 'oauth')
+      const failed: string[] = []
+      let succeeded = 0
+      // 每次点击仅查询当页账号，并发最多为 2，不刷新令牌或发起推理。
+      const worker = async () => {
+        while (pending.length > 0 && !controller.signal.aborted) {
+          const account = pending.shift()!
+          try {
+            await refreshAccountQuota({ accountId: account.id }, { silent: true, signal: controller.signal })
+            succeeded += 1
+          }
+          catch {
+            if (!controller.signal.aborted)
+              failed.push(account.name)
+          }
+        }
+      }
+      await Promise.all([worker(), worker()])
+      if (controller.signal.aborted)
+        return
+      if (!await query.execute({ background: true }) || controller.signal.aborted)
+        return
+      if (failed.length) {
+        toast.warning(`配额查询成功 ${succeeded} 个，失败 ${failed.length} 个：${failed.join('、')}`, 8000)
+      }
+      else {
+        toast.success(succeeded > 0 ? `列表及 ${succeeded} 个账号的上游配额已更新` : '列表已刷新，当前页没有已启用的 OAuth 账号')
+      }
+    }
+    finally {
+      if (quotaController === controller) {
+        quotaController = undefined
+        refreshingQuotas.value = false
+      }
+    }
+  }
+
+  onScopeDispose(() => quotaController?.abort())
+
   watchDebounced(
     searchQuery,
     () => {
@@ -100,6 +151,8 @@ export function useAccountsQuery() {
     accounts: query.items,
     loadAccounts: query.execute,
     refreshAccountsSilently: () => query.execute({ silent: true }),
+    refreshingQuotas,
+    refreshAccountsWithQuota,
     searchQuery,
     providerQuery,
     statusQuery,

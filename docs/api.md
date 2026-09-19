@@ -362,6 +362,25 @@ Token 明细、费用明细、用时/首字与状态。Token 和费用复用现�
 
 ## 5. 账号
 
+### Codex 292 打票（本地定制）
+
+管理员可在账号页“292 打票”中设置总开关、专用代理和参与账号。
+`GET /api/admin/accounts/codex-tickets` 返回脱敏设置与近一小时尝试状态；
+`POST` 接收 `{ enabled, proxyUrl, accountIds, revision }`，以 revision 防止旧表单覆盖新配置。
+代理 URL 留空保留原值，接口不回传代理密码或票据原文。
+
+仅选中的 OpenAI OAuth 账号参与。账号调度关闭时停止后续采集，重新启用后继续。
+`gpt-6-astra` 与 `gpt-5.6-sol` 各自缓存一张 HTTP 200、292 字节且 `gAAAAA` 前缀的票据，
+有效期为本地一小时，提前十分钟续期；轮次间隔六秒，单次超时二十五秒。
+采集串行进行以限制代理负载，每次使用新连接；实际出口轮换由代理提供方决定。
+业务出站仍使用账号原代理。开启后目标账号缺票会被该模型的选择流程排除；
+HTTP 和 WebSocket 出站使用已取得票据覆盖 turn-state，不在业务请求里现场打票。
+
+票据与设置保存在 `host.runtime_data_dir/codex-tickets.json`，需随运行目录备份。
+凭据版本变化时旧票不再使用。总开关默认关闭，正常会话 turn-state 的既有处理不受关闭状态影响。
+当前尝试摘要包含时间、HTTP 状态、长度和成功率，不记录真实出口 IP；
+代理入口地址不代表实际出口，不能用于推算尝试过多少 IP。
+
 账号 API 使用统一路由，不存在 Provider Instance 或 Provider 专属账号路由。需要 Provider 的请求只接受
 `provider: "openai" | "xai"`。
 

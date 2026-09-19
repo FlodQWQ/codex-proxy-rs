@@ -23,10 +23,9 @@ export const accountColumns = defineTableColumns<AccountRow>([
   {
     key: 'identity',
     hideable: false,
-    label: '账号',
+    label: '账号名称 / 邮箱',
     kind: 'identity',
-    size: '3xl',
-    sortable: 'email',
+    size: '2xl',
   },
   {
     key: 'provider',
@@ -36,16 +35,20 @@ export const accountColumns = defineTableColumns<AccountRow>([
     align: 'center',
     format: value => accountProviderLabel(typeof value === 'string' ? value : null),
   },
-  { key: 'status', label: '状态', kind: 'status', align: 'left', sortable: true },
-  { key: 'planType', label: '套餐', kind: 'status', sortable: true },
-  { key: 'usage', label: '用量', kind: 'custom', size: '2xl', sortable: true },
-  { key: 'groups', label: '账号分组', kind: 'status' },
+  { key: 'groups', label: '分组', kind: 'status', size: 'sm', align: 'left' },
+  { key: 'status', label: '状态', kind: 'status', size: 'md', align: 'left', sortable: true },
+  { key: 'scheduling', label: '调度', kind: 'custom', size: 'sm', align: 'center' },
+  { key: 'planType', label: '套餐', kind: 'status', sortable: true, defaultHidden: true },
+  { key: 'usage', label: '用量', kind: 'custom', size: 'xl', sortable: true },
+  { key: 'concurrency', label: '并发 / 权重', kind: 'custom', size: 'sm', align: 'center' },
+  { key: 'outboundProxyEndpoint', label: '代理', kind: 'mono', size: 'xl', defaultHidden: true },
   {
     key: 'lastUsedAt',
     label: '最后使用',
     kind: 'datetime',
     sortable: true,
     emptyText: '',
+    defaultHidden: true,
   },
   {
     key: 'accessTokenExpiresAtDisplay',
@@ -54,8 +57,9 @@ export const accountColumns = defineTableColumns<AccountRow>([
     sortable: 'expiresAt',
     format: value => optionalAccountCell(value),
     emptyText: '',
+    defaultHidden: true,
   },
-  { key: 'actions', label: '操作', kind: 'actions', size: 'lg', hideable: false },
+  { key: 'actions', label: '操作', kind: 'actions', size: 'md', hideable: false },
 ])
 
 export const statusLabels: Record<AccountStatus, string> = {

@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ChevronDown } from '@lucide/vue'
+import { ChevronDown, Ticket } from '@lucide/vue'
 import { ref } from 'vue'
 
-import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
-import BaseCard from '@/components/base/BaseCard.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
 import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
 import BaseConfirmModal from '@/components/base/BaseConfirmModal.vue'
 import BasePageHeader from '@/components/base/BasePageHeader.vue'
+import BaseSwitch from '@/components/base/BaseSwitch.vue'
 import BaseTableColumnSettings from '@/components/base/BaseTable/BaseTableColumnSettings.vue'
 import BaseTablePagination from '@/components/base/BaseTable/BaseTablePagination.vue'
 import BaseTable from '@/components/base/BaseTable/index.vue'
@@ -19,15 +19,16 @@ import AccountConnectionTestModal from './components/AccountConnectionTestModal.
 import AccountCreateModal from './components/AccountCreateModal/index.vue'
 import AccountEditModal from './components/AccountEditModal.vue'
 import AccountFilters from './components/AccountFilters.vue'
-import AccountIdentityCell from './components/AccountIdentityCell.vue'
 import AccountImportTasks from './components/AccountImportTasks/index.vue'
 import AccountOverviewCards from './components/AccountOverviewCards.vue'
 import AccountPlanBadge from './components/AccountPlanBadge.vue'
 import AccountQuotaPanel from './components/AccountQuotaPanel/index.vue'
-import AccountQuotaSummaryCell from './components/AccountQuotaSummaryCell/index.vue'
 import AccountStatusBadge from './components/AccountStatusBadge/index.vue'
 import AccountTableActions from './components/AccountTableActions.vue'
+import AccountTableIdentity from './components/AccountTableIdentity.vue'
+import AccountTableUsage from './components/AccountTableUsage.vue'
 import AccountUsagePanel from './components/AccountUsagePanel.vue'
+import CodexTicketsModal from './components/CodexTicketsModal.vue'
 import { useAccountBatchEditor } from './composables/useAccountBatchEditor'
 import { useAccountConnectionTest } from './composables/useAccountConnectionTest'
 import { useAccountEditor } from './composables/useAccountEditor'
@@ -38,12 +39,15 @@ import { useAccountsTable } from './composables/useAccountsTable'
 import { accountColumns, derivedAccountStatus } from './constants'
 
 const selectedIds = ref<Set<string>>(new Set())
+const showCodexTickets = ref(false)
 const { visibleColumns, columnOptions, setColumnVisible, resetColumns } = useTableColumns(accountColumns, 'accounts')
 const {
   loading,
   accounts,
   loadAccounts,
   refreshAccountsSilently,
+  refreshingQuotas,
+  refreshAccountsWithQuota,
   searchQuery,
   providerQuery,
   statusQuery,
@@ -103,6 +107,8 @@ const {
   handleRecover,
   handleRefresh,
   handleRefreshQuota,
+  schedulingAccountIds,
+  handleToggleScheduling,
 } = useAccountMutations({
   onImportTaskCreated: importTasks.created,
   accounts,
@@ -189,19 +195,18 @@ const {
 </script>
 
 <template>
-  <div class="flex min-h-0 w-full flex-col xl:h-full xl:overflow-hidden">
+  <div class="flex min-h-0 w-full flex-col gap-3 xl:h-full xl:overflow-hidden">
     <BasePageHeader
-      class="h-17"
+      class="min-h-12! [&_h1]:text-2xl"
       title="账号管理"
-      description="维护账号池，查看可用性、配额与使用状态"
     />
 
     <AccountOverviewCards :summary="accountSummary" />
 
-    <BaseCard
-      class="mt-4 flex flex-col xl:h-[calc(100dvh-250px)] xl:min-h-125"
+    <section
+      class="flex min-h-0 flex-1 flex-col"
     >
-      <template #header>
+      <div class="shrink-0 pb-3">
         <AccountFilters
           v-model:search="searchQuery"
           v-model:status="statusQuery"
@@ -209,6 +214,7 @@ const {
           v-model:group="groupQuery"
           :groups="groups"
           :groups-loading="groupsLoading"
+          :loading="loading || refreshingQuotas"
           :selected-count="selectedIds.size"
           :batch-deleting="batchDeleting"
           :exporting-accounts="exportingAccounts"
@@ -219,8 +225,12 @@ const {
           @export-selected="handleExportAccounts"
           @create="openCreateAccount"
           @edit-selected="openBatchEdit"
+          @refresh="refreshAccountsWithQuota()"
         >
           <template #actions>
+            <BaseButton variant="secondary" @click="showCodexTickets = true">
+              <Ticket class="size-4" />292 打票
+            </BaseButton>
             <BaseTableColumnSettings
               :options="columnOptions"
               @change="setColumnVisible"
@@ -228,12 +238,13 @@ const {
             />
           </template>
         </AccountFilters>
-      </template>
+      </div>
 
-      <template #body>
+      <div class="flex min-h-0 flex-1 flex-col">
         <div class="flex min-h-0 flex-col xl:h-full">
           <BaseTable
-            class="h-100! min-h-100 flex-none [--cp-table-row-height:72px] xl:h-auto! xl:min-h-0 xl:flex-1"
+            class="h-[60dvh]! min-h-80 flex-none [--cp-table-row-height-sm:72px] xl:h-auto! xl:min-h-0 xl:flex-1"
+            density="compact"
             :columns="visibleColumns"
             :rows="accounts"
             :loading="loading"
@@ -275,14 +286,14 @@ const {
             </template>
 
             <template #identity="{ row }">
-              <AccountIdentityCell :account="row" show-notes />
+              <AccountTableIdentity :account="row" @edit="openAccountEdit" />
             </template>
 
             <template #provider="{ row }">
-              <ProviderIconGroup
-                :provider="row.provider"
-                :authentication-kind="row.authenticationKind"
-              />
+              <div class="flex flex-col items-center gap-1.5">
+                <ProviderIconGroup :provider="row.provider" :authentication-kind="row.authenticationKind" />
+                <AccountPlanBadge :authentication-kind="row.authenticationKind" :plan-type="row.planType" :plan-type-display="row.planTypeDisplay" />
+              </div>
             </template>
 
             <template #status="{ row }">
@@ -302,12 +313,50 @@ const {
             </template>
 
             <template #usage="{ row }">
-              <AccountQuotaSummaryCell :account="row" />
+              <AccountTableUsage
+                :account="row"
+                :refreshing="refreshingQuotaAccountIds.has(row.id) || refreshingQuotas"
+                @refresh-quota="handleRefreshQuota"
+              />
+            </template>
+
+            <template #scheduling="{ row }">
+              <div class="flex flex-col items-center gap-1">
+                <BaseSwitch
+                  :key="`${row.id}:${schedulingAccountIds.has(row.id)}`"
+                  :model-value="row.enabled"
+                  :label="`允许调度 ${row.name}`"
+                  :disabled="schedulingAccountIds.has(row.id)"
+                  @update:model-value="handleToggleScheduling(row)"
+                />
+                <span class="text-cp-xs" :class="row.enabled ? 'text-cp-success-text' : 'text-cp-text-tertiary'">
+                  {{ schedulingAccountIds.has(row.id) ? '保存中' : row.enabled ? '已开启' : '已停止' }}
+                </span>
+              </div>
+            </template>
+
+            <template #concurrency="{ row }">
+              <div class="flex flex-col gap-1 text-center text-cp-xs tabular-nums">
+                <span :title="`并发上限：${row.concurrencyLimit ?? '继承系统'}`">{{ row.concurrencyLimit ?? '继承' }}</span>
+                <span class="text-cp-text-tertiary">权重 {{ row.weight }}</span>
+              </div>
+            </template>
+
+            <template #outboundProxyEndpoint="{ row }">
+              <span class="block truncate text-cp-xs" :title="row.outboundProxyEndpoint ?? '直连'">{{ row.outboundProxyEndpoint ?? '直连' }}</span>
             </template>
 
             <template #groups="{ row }">
-              <div class="flex w-full justify-center">
-                <AccountGroupMarks :groups="row.groups" />
+              <div class="flex min-w-0 flex-wrap gap-1">
+                <span
+                  v-for="group in row.groups" :key="group.id"
+                  class="max-w-full truncate rounded border border-cp-border-secondary bg-cp-fill-quaternary px-1.5 py-0.5 text-cp-xs"
+                  :class="group.enabled ? 'text-cp-text-secondary' : 'text-cp-text-disabled'"
+                  :title="group.name + (group.enabled ? '' : '（已禁用）')"
+                >
+                  {{ group.name }}{{ group.enabled ? '' : '（停用）' }}
+                </span>
+                <span v-if="!row.groups.length" class="text-cp-xs text-cp-text-tertiary">未分组</span>
               </div>
             </template>
 
@@ -353,9 +402,10 @@ const {
             @page-size-change="handlePageSizeChange"
           />
         </div>
-      </template>
-    </BaseCard>
+      </div>
+    </section>
 
+    <CodexTicketsModal v-model="showCodexTickets" />
     <AccountConnectionTestModal
       v-model="showConnectionTestModal"
       v-model:selected-model="connectionTestSelectedModel"

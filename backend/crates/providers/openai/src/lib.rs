@@ -126,6 +126,15 @@ pub async fn initialize(
     );
     platform_releases.restore().await;
     let repository = CodexCredentialRepository::new(Arc::clone(&accounts));
+    let tickets = Arc::new(
+        credential::CodexTicketService::new(
+            repository.clone(),
+            profile.clone(),
+            config.ticket_state_path(),
+        )
+        .await
+        .map_err(|_| OpenAiInitializeError::TicketState)?,
+    );
     let websocket_pool = Arc::new(CodexWebSocketPool::with_config(
         config.websocket_pool_config(),
     ));
@@ -151,16 +160,19 @@ pub async fn initialize(
         http.clone(),
         config.base_url().to_owned(),
     ));
-    let selector = Arc::new(CodexCredentialSelector::new(
-        provider_kind.clone(),
-        repository.clone(),
-        Arc::clone(&leases),
-        session_affinity,
-        session_exclusions,
-        Arc::clone(&quota),
-        Arc::clone(&account_feedback),
-        CodexCookiePolicy::official().map_err(|_| OpenAiInitializeError::CookiePolicy)?,
-    ));
+    let selector = Arc::new(
+        CodexCredentialSelector::new(
+            provider_kind.clone(),
+            repository.clone(),
+            Arc::clone(&leases),
+            session_affinity,
+            session_exclusions,
+            Arc::clone(&quota),
+            Arc::clone(&account_feedback),
+            CodexCookiePolicy::official().map_err(|_| OpenAiInitializeError::CookiePolicy)?,
+        )
+        .with_tickets(Arc::clone(&tickets)),
+    );
     let core_provider: Arc<dyn Provider> = Arc::new(
         CodexProvider::new(
             selector,
@@ -174,7 +186,8 @@ pub async fn initialize(
             config.stream_max_retries(),
         )
         .map_err(OpenAiInitializeError::Provider)?
-        .with_session_identity(session_identity),
+        .with_session_identity(session_identity)
+        .with_tickets(Arc::clone(&tickets)),
     );
     let token_client = Arc::new(
         credential::token_client::openai_token_client(
@@ -214,21 +227,24 @@ pub async fn initialize(
         )
         .with_oauth_client_id(config.oauth_client_id()),
     );
-    let admin_provider: Arc<dyn ProviderAdmin> = Arc::new(OpenAiAdminProvider::new(
-        provider_kind,
-        profile,
-        accounts,
-        OpenAiAdminServices {
-            credentials: credential_admin,
-            oauth: oauth_admin,
-            profile_statistics,
-            quota: Arc::clone(&quota),
-            catalog: Arc::clone(&catalog),
-        },
-        websocket_pool,
-        desktop_release_status,
-    ));
-    let worker_contributions = provider::worker_contributions(
+    let admin_provider: Arc<dyn ProviderAdmin> = Arc::new(
+        OpenAiAdminProvider::new(
+            provider_kind,
+            profile,
+            accounts,
+            OpenAiAdminServices {
+                credentials: credential_admin,
+                oauth: oauth_admin,
+                profile_statistics,
+                quota: Arc::clone(&quota),
+                catalog: Arc::clone(&catalog),
+            },
+            websocket_pool,
+            desktop_release_status,
+        )
+        .with_tickets(Arc::clone(&tickets)),
+    );
+    let mut worker_contributions = provider::worker_contributions(
         refresh,
         quota,
         catalog,
@@ -241,6 +257,8 @@ pub async fn initialize(
         },
     )
     .map_err(|_| OpenAiInitializeError::Worker)?;
+    worker_contributions
+        .push(provider::ticket_worker(tickets).map_err(|_| OpenAiInitializeError::Worker)?);
 
     Ok(ProviderBundle {
         core_provider,
@@ -269,6 +287,8 @@ impl ProviderBundle {
 /// OpenAI 初始化失败的脱敏分类。
 #[derive(Debug, thiserror::Error)]
 pub enum OpenAiInitializeError {
+    #[error("OpenAI ticket state could not initialize")]
+    TicketState,
     #[error(transparent)]
     Config(OpenAiConfigError),
     #[error("OpenAI runtime policy is unavailable")]
