@@ -1,5 +1,6 @@
 use super::ChatOptions;
 use bytes::Bytes;
+use gateway_core::event::ProviderEvent;
 use gateway_protocol::openai::sse::SseEventDecoder;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,7 +43,30 @@ fn sse(value: Value) -> Bytes {
     Bytes::from(format!("data: {value}\n\n"))
 }
 
-pub(in crate::openai) fn complete_response(response: Value, options: &ChatOptions) -> Value {
+pub(in crate::openai) fn complete_response(
+    mut response: Value,
+    options: &ChatOptions,
+    events: &[ProviderEvent],
+) -> Value {
+    // Codex 的终态可能是薄快照；完整消息已在 output_item.done 中交付。
+    if response["output"].as_array().is_none_or(Vec::is_empty) {
+        let mut items = BTreeMap::new();
+        for event in events {
+            if let Some(wire) = event
+                .wire_event()
+                .filter(|wire| wire.protocol() == "openai")
+                && wire.event_type().or_else(|| wire.data()["type"].as_str())
+                    == Some("response.output_item.done")
+                && let Some(index) = wire.data()["output_index"].as_u64()
+                && let Some(item) = wire.data().get("item").filter(|item| item.is_object())
+            {
+                items.insert(index, item.clone());
+            }
+        }
+        if !items.is_empty() {
+            response["output"] = Value::Array(items.into_values().collect());
+        }
+    }
     let mut content = String::new();
     let mut refusal = String::new();
     let mut reasoning = String::new();
@@ -259,6 +283,10 @@ impl ChatStream {
                     }
                     "response.completed" | "response.incomplete" => {
                         let response = &data["response"];
+                        if !response.is_object() {
+                            self.failed = true;
+                            return out;
+                        }
                         for (index, item) in response["output"]
                             .as_array()
                             .into_iter()

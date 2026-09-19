@@ -397,6 +397,61 @@ fn chat_terminal(output: Value) -> Value {
         "usage":{"input_tokens":20,"output_tokens":10,"total_tokens":30,"input_tokens_details":{"cached_tokens":5},"output_tokens_details":{"reasoning_tokens":2}}})
 }
 
+#[tokio::test]
+async fn chat_completions_json_recovers_items_from_thin_codex_terminal() {
+    let session = FakeSession::buffered_provider(
+        Arc::new(Trace::default()),
+        vec![
+            chat_wire(
+                "response.output_item.done",
+                json!({"output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":"OK"}]}}),
+            ),
+            chat_wire(
+                "response.output_item.done",
+                json!({"output_index":2,"item":{"type":"function_call","call_id":"call_1","name":"weather","arguments":"{}"}}),
+            ),
+            chat_wire(
+                "response.completed",
+                json!({"response":chat_terminal(json!([]))}),
+            ),
+        ],
+    );
+    let response = chat_response(
+        session,
+        json!({"model":"model-a","messages":[{"role":"user","content":"hi"}]}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 100_000).await.unwrap()).unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "OK");
+    assert_eq!(
+        body["choices"][0]["message"]["tool_calls"][0]["id"],
+        "call_1"
+    );
+    assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+}
+
+#[tokio::test]
+async fn chat_completions_malformed_terminal_fails_without_committing_or_panicking() {
+    let trace = Arc::new(Trace::default());
+    let session = FakeSession::buffered_provider(
+        trace.clone(),
+        vec![chat_wire(
+            "response.completed",
+            json!({"response":"invalid"}),
+        )],
+    );
+    let response = chat_response(
+        session,
+        json!({"model":"model-a","messages":[{"role":"user","content":"hi"}]}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(trace.is_cancelled());
+    assert!(!trace.snapshot().contains(&"commit"));
+}
+
 async fn chat_response(session: FakeSession, body: Value) -> axum::response::Response {
     let execution = Arc::new(SessionExecution {
         client: authenticated_client_for_provider("sk_correlation_test", "openai"),

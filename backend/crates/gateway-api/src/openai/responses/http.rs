@@ -310,8 +310,13 @@ fn encode_collected_events(
     let response = encoder
         .finish()
         .map_err(BufferedResponseEncodeError::Canonical)?;
+    if chat.is_some() && !response.is_object() {
+        return Err(BufferedResponseEncodeError::Canonical(
+            ResponseEncodeError::Serialization,
+        ));
+    }
     let response = if let Some(options) = chat {
-        chat::complete_response(response, options)
+        chat::complete_response(response, options, events)
     } else {
         response
     };
