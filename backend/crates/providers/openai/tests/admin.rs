@@ -1446,6 +1446,11 @@ async fn codex_tickets_admin_preserves_secrets_rejects_stale_updates_and_paused_
     let admin = bundle.admin_provider();
     let initial = admin.codex_tickets().await.unwrap();
     assert_eq!(initial["enabled"], json!(false));
+    assert_eq!(initial["harvestIdentity"]["version"], "0.155.0");
+    assert_eq!(
+        initial["harvestIdentity"]["userAgent"],
+        "codex_cli_rs/0.155.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
+    );
     let settings = json!({"enabled":true,"proxyUrl":"http://user:private-password@127.0.0.1:9","accountIds":["acct_ticket_test"],"revision":0});
     let saved = admin.update_codex_tickets(settings.clone()).await.unwrap();
     assert!(!saved.to_string().contains("private-password"));

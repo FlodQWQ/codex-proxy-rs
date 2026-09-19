@@ -2,6 +2,7 @@
 use super::CodexCredentialRepository;
 use crate::transport::{headers::build_codex_model_headers, profile::CodexWireProfileState};
 use chrono::Utc;
+use futures::{StreamExt as _, TryStreamExt as _};
 use gateway_admin::ports::provider::{ProviderAdminError, ProviderAdminErrorKind};
 use gateway_core::account::{ProviderAccount, ProviderAccountId};
 use reqwest::{Client, Proxy, redirect::Policy};
@@ -12,6 +13,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Mutex, time::Duration};
 
 const MODELS: [&str; 2] = ["gpt-6-astra", "gpt-5.6-sol"];
 const TTL: i64 = 3600;
+mod process;
 mod telemetry;
 mod trace;
 
@@ -51,6 +53,7 @@ struct State {
 }
 
 pub(crate) struct CodexTicketService {
+    helper: Option<PathBuf>,
     base_url: String,
     repository: CodexCredentialRepository,
     profile: CodexWireProfileState,
@@ -86,6 +89,7 @@ impl CodexTicketService {
             Err(e) => return Err(e),
         };
         Ok(Self {
+            helper: process::executable(),
             base_url,
             repository,
             profile,
@@ -176,6 +180,8 @@ impl CodexTicketService {
         });
         Ok(
             json!({"enabled":state.settings.enabled,"revision":state.settings.revision,"accountIds":state.settings.account_ids,
+            "transport":if self.helper.is_some() {"go-http1"} else {"native-http1"},
+            "harvestIdentity":{"version":self.harvest_profile().codex_version,"userAgent":self.harvest_profile().user_agent()},
             "proxyConfigured":!state.settings.proxy_url.is_empty(),"proxyEndpoint":endpoint,
             "ttlSeconds":TTL,"refreshBeforeSeconds":600,"intervalSeconds":6,"failClosed":true,"accounts":accounts}),
         )
@@ -282,94 +288,128 @@ impl CodexTicketService {
         if !settings.enabled || settings.proxy_url.is_empty() {
             return Ok(());
         }
+        // 同轮并行探测账号/模型，全部完成后由 worker 等待六秒；限制八个并发以保护宿主。
+        let mut probes = Vec::new();
         for id in &settings.account_ids {
-            let typed = ProviderAccountId::new(id.clone())
-                .map_err(|_| error(ProviderAdminErrorKind::Invalid))?;
             for model in MODELS {
-                let current = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .settings
-                    .clone();
-                if !current.enabled || current.revision != settings.revision {
-                    return Ok(());
-                }
-                let Some(account) = self
-                    .repository
-                    .store()
-                    .get_account(&typed)
-                    .await
-                    .map_err(|_| error(ProviderAdminErrorKind::Unavailable))?
-                else {
-                    continue;
-                };
-                if !account.enabled() || account.authentication_kind() != "oauth" {
-                    continue;
-                }
-                let now = Utc::now().timestamp();
-                let cached = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .records
-                    .get(&key(id, model))
-                    .cloned()
-                    .unwrap_or_default();
-                if valid(&cached, now + 600, account.revision().get()) {
-                    continue;
-                }
-                let (ticket, status, result, ip) =
-                    self.probe(&account, model, &settings.proxy_url).await;
-                let success = status == 200 && ticket.len() == 292 && ticket.starts_with("gAAAAA");
-                let attempt = Attempt {
-                    ip,
-                    at: now,
-                    status,
-                    length: ticket.len(),
-                    success,
-                    result,
-                };
-                let Some(fresh) = self
-                    .repository
-                    .store()
-                    .get_account(&typed)
-                    .await
-                    .map_err(|_| error(ProviderAdminErrorKind::Unavailable))?
-                else {
-                    continue;
-                };
-                if !fresh.enabled() || fresh.revision() != account.revision() {
-                    continue;
-                }
-                let _write = self.writes.lock().await;
-                let mut proposed = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                if proposed.settings.revision != settings.revision {
-                    continue;
-                }
-                let record = proposed.records.entry(key(id, model)).or_default();
-                record.attempts.retain(|a| a.at >= now - TTL);
-                if record.attempts.len() >= 1000 {
-                    record.attempts.remove(0);
-                }
-                record.attempts.push(attempt);
-                if success {
-                    record.ticket = ticket;
-                    record.expires = Utc::now().timestamp() + TTL;
-                    record.credential_revision = account.revision().get();
-                }
-                self.persist(&proposed).await?;
-                *self
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = proposed;
+                probes.push(self.refresh_one(&settings, id, model));
             }
         }
+        futures::stream::iter(probes)
+            .buffer_unordered(8)
+            .try_collect::<Vec<_>>()
+            .await?;
         Ok(())
+    }
+
+    async fn refresh_one(
+        &self,
+        settings: &Settings,
+        id: &str,
+        model: &str,
+    ) -> Result<(), ProviderAdminError> {
+        let typed = ProviderAccountId::new(id.to_owned())
+            .map_err(|_| error(ProviderAdminErrorKind::Invalid))?;
+        let current = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .settings
+            .clone();
+        if !current.enabled || current.revision != settings.revision {
+            return Ok(());
+        }
+        let Some(account) = self
+            .repository
+            .store()
+            .get_account(&typed)
+            .await
+            .map_err(|_| error(ProviderAdminErrorKind::Unavailable))?
+        else {
+            return Ok(());
+        };
+        if !account.enabled() || account.authentication_kind() != "oauth" {
+            return Ok(());
+        }
+        let now = Utc::now().timestamp();
+        let cached = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .records
+            .get(&key(id, model))
+            .cloned()
+            .unwrap_or_default();
+        if valid(&cached, now + 600, account.revision().get()) {
+            return Ok(());
+        }
+        let (ticket, status, result, ip) = self.probe(&account, model, &settings.proxy_url).await;
+        let success = status == 200 && ticket.len() == 292 && ticket.starts_with("gAAAAA");
+        let attempt = Attempt {
+            ip,
+            at: now,
+            status,
+            length: ticket.len(),
+            success,
+            result,
+        };
+        let Some(fresh) = self
+            .repository
+            .store()
+            .get_account(&typed)
+            .await
+            .map_err(|_| error(ProviderAdminErrorKind::Unavailable))?
+        else {
+            return Ok(());
+        };
+        if !fresh.enabled() || fresh.revision() != account.revision() {
+            return Ok(());
+        }
+        let _write = self.writes.lock().await;
+        let mut proposed = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if proposed.settings.revision != settings.revision {
+            return Ok(());
+        }
+        let record = proposed.records.entry(key(id, model)).or_default();
+        record.attempts.retain(|a| a.at >= now - TTL);
+        if record.attempts.len() >= 1000 {
+            record.attempts.remove(0);
+        }
+        record.attempts.push(attempt);
+        if success {
+            record.ticket = ticket;
+            record.expires = Utc::now().timestamp() + TTL;
+            record.credential_revision = account.revision().get();
+        }
+        self.persist(&proposed).await?;
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = proposed;
+        Ok(())
+    }
+
+    fn harvest_profile(&self) -> crate::transport::profile::CodexWireProfile {
+        use crate::transport::profile::selection::{ClientKind, ClientPlatform};
+        let mut profile = self.profile.snapshot();
+        profile.client_kind = ClientKind::Cli;
+        profile.originator = "codex_cli_rs".to_owned();
+        // 独立读取官方 CLI 稳定版本，绝不沿用 Desktop 内嵌的 alpha 版本。
+        profile.codex_version = self
+            .profile
+            .client_release(ClientKind::Cli, ClientPlatform::Linux, "x86_64")
+            .map(|release| release.codex_version)
+            .unwrap_or_else(|| "0.153.4".to_owned());
+        profile.os_type = "Ubuntu".to_owned();
+        profile.os_version = "22.4.0".to_owned();
+        profile.arch = "x86_64".to_owned();
+        profile.terminal = "xterm-256color".to_owned();
+        profile.residency = None;
+        profile
     }
 
     async fn probe(
@@ -388,9 +428,7 @@ impl CodexTicketService {
                 .authentication
                 .authorization_header()
                 .map_err(|_| "token_error")?;
-            let mut profile = self.profile.snapshot();
-            profile.client_kind = crate::transport::profile::selection::ClientKind::Cli;
-            profile.originator = "codex_cli_rs".to_owned();
+            let mut profile = self.harvest_profile();
             if model.contains("astra")
                 && semver::Version::parse(&profile.codex_version)
                     .is_ok_and(|v| v < semver::Version::new(0, 153, 4))
@@ -403,6 +441,48 @@ impl CodexTicketService {
                 account.upstream_account_id(),
             )
             .map_err(|_| "headers_error")?;
+            let endpoint = crate::transport::endpoint_url(
+                &self.base_url,
+                crate::transport::CODEX_RESPONSES_PATH,
+            );
+            let body = json!({"model":model,"store":false,"stream":true,"instructions":"Reply with exactly: pong",
+                "input":[{"role":"user","content":[{"type":"input_text","text":"ping"}]}]});
+            let session = uuid::Uuid::new_v4().to_string();
+            if let Some(helper) = &self.helper {
+                let mut fields: BTreeMap<String, String> = headers
+                    .iter()
+                    .map(|(name, value)| {
+                        (name.to_string(), value.to_str().unwrap_or("").to_owned())
+                    })
+                    .collect();
+                fields.insert("Accept".to_owned(), "text/event-stream".to_owned());
+                fields.insert("Content-Type".to_owned(), "application/json".to_owned());
+                fields.insert(
+                    "OpenAI-Beta".to_owned(),
+                    "responses=experimental".to_owned(),
+                );
+                fields.insert("session_id".to_owned(), session);
+                let result = process::probe(
+                    helper,
+                    json!({"endpoint":endpoint,"proxyUrl":proxy,"headers":fields,"body":body}),
+                )
+                .await?;
+                let failure = if result.status == 0 {
+                    Some(match result.result.as_str() {
+                        "proxy_error" => "proxy_error",
+                        "input_error" => "input_error",
+                        _ => "network_error",
+                    })
+                } else {
+                    None
+                };
+                return Ok((
+                    result.ticket,
+                    result.status,
+                    (!result.ip.is_empty()).then_some(result.ip),
+                    failure,
+                ));
+            }
             let builder = Client::builder()
                 .no_proxy()
                 .http1_only()
@@ -413,17 +493,18 @@ impl CodexTicketService {
                 .proxy(Proxy::all(proxy).map_err(|_| "proxy_error")?);
             let client = crate::transport::tls::build_reqwest_client_with_custom_ca(builder)
                 .map_err(|_| "proxy_error")?;
-            let endpoint = crate::transport::endpoint_url(
-                &self.base_url,
-                crate::transport::CODEX_RESPONSES_PATH,
-            );
             let observed = trace::observe(&client, &endpoint).await;
-            let response = client.post(&endpoint)
-                .headers(headers).header("connection","close").header("accept","text/event-stream")
-                .header("openai-beta","responses=experimental").header("session_id",uuid::Uuid::new_v4().to_string())
-                .json(&json!({"model":model,"store":false,"stream":true,"instructions":"Reply with exactly: pong",
-                    "input":[{"role":"user","content":[{"type":"input_text","text":"ping"}]}]}))
-                .send().await.map_err(|_| "network_error")?;
+            let response = client
+                .post(&endpoint)
+                .headers(headers)
+                .header("connection", "close")
+                .header("accept", "text/event-stream")
+                .header("openai-beta", "responses=experimental")
+                .header("session_id", session)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|_| "network_error")?;
             let ip = observed.and_then(|trace| trace.confirm(&response));
             let status = response.status().as_u16();
             let state = response
@@ -433,16 +514,19 @@ impl CodexTicketService {
                 .unwrap_or("")
                 .trim()
                 .to_owned();
-            Ok::<_, &str>((state, status, ip))
+            Ok::<_, &str>((state, status, ip, None))
         };
         match tokio::time::timeout(Duration::from_secs(25), operation).await {
-            Ok(Ok((ticket, status, ip))) => {
-                let result = if status == 200 && ticket.len() == 292 && ticket.starts_with("gAAAAA")
-                {
-                    "success"
-                } else {
-                    "miss"
-                };
+            Ok(Ok((ticket, status, ip, failure))) => {
+                let result = failure.unwrap_or(
+                    if status == 200 && ticket.len() == 292 && ticket.starts_with("gAAAAA") {
+                        "success"
+                    } else if status != 200 {
+                        "http_error"
+                    } else {
+                        "invalid_ticket"
+                    },
+                );
                 (ticket, status, result.to_owned(), ip)
             }
             Ok(Err(reason)) => (String::new(), 0, reason.to_owned(), None),
