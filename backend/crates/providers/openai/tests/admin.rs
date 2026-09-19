@@ -1567,6 +1567,149 @@ async fn codex_tickets_gate_and_inject_only_selected_account_model() {
     }
 }
 
+#[tokio::test]
+async fn codex_tickets_ip_summary_excludes_expired_future_and_preserves_unknown_attempts() {
+    let store = Arc::new(MemoryAccountStore::default());
+    let id = "acct_ticket_summary";
+    store
+        .seed_oauth_credential(ImportCodexOAuthCredential {
+            account_id: id.to_owned(),
+            name: "summary".to_owned(),
+            secret: secret("test-token"),
+            verified_account: profile("summary-user"),
+            next_refresh_at: None,
+            enabled: false,
+        })
+        .await;
+    let config = valid_config();
+    let now = Utc::now().timestamp();
+    let attempts = [
+        json!({"at":now-5,"ip":"8.8.8.8","status":200,"length":292,"success":true,"result":"success"}),
+        json!({"at":now-4,"ip":"8.8.8.8","status":200,"length":100,"success":false,"result":"miss"}),
+        json!({"at":now-3,"ip":"1.1.1.1","status":200,"length":292,"success":true,"result":"success"}),
+        json!({"at":now-2,"status":0,"length":0,"success":false,"result":"timeout"}),
+        json!({"at":now-3601,"ip":"9.9.9.9","status":200,"length":292,"success":true,"result":"success"}),
+        json!({"at":now+60,"ip":"4.4.4.4","status":200,"length":292,"success":true,"result":"success"}),
+    ];
+    let state_path = config._runtime.path().join("deploy/codex-tickets.json");
+    std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    std::fs::write(state_path, serde_json::to_vec(&json!({
+        "settings":{"enabled":false,"proxyUrl":"http://user:private-password@127.0.0.1:9","accountIds":[id],"revision":1},
+        "records":{format!("{id}/gpt-6-astra"):{"ticket":"","expires":0,"credential_revision":1,"attempts":attempts}}
+    })).unwrap()).unwrap();
+    let bundle = provider_openai::initialize(
+        config.config,
+        provider_ports_with(store, Arc::new(TestOAuthPending::default())),
+    )
+    .await
+    .unwrap();
+    let view = bundle.admin_provider().codex_tickets().await.unwrap();
+    let model = &view["accounts"][0]["models"][0];
+    assert_eq!(model["attempts"], 4);
+    assert_eq!(model["uniqueIps"], 2);
+    assert_eq!(model["unknownIpAttempts"], 1);
+    assert_eq!(model["successRate"], 50.0);
+    assert_eq!(model["lastAttempt"]["at"], now - 2);
+    assert_eq!(model["ips"].as_array().unwrap().len(), 3);
+    assert!(model["ips"][0]["ip"].is_null());
+    assert!(!view.to_string().contains("private-password"));
+}
+
+#[tokio::test]
+async fn codex_tickets_trace_reuses_connection_without_credentials_and_rejects_reconnects() {
+    for (close, body, expected_ips) in [
+        (false, "ip=8.8.8.8\nloc=US\n", 1),
+        (true, "ip=8.8.8.8\nloc=US\n", 0),
+        (false, "ip=127.0.0.1\n", 0),
+        (false, "ip=10.0.0.1\n", 0),
+        (false, "ip=invalid\n", 0),
+        (false, "ip=2606:4700:4700::1111\n", 1),
+    ] {
+        let server = MockServer::start().await;
+        let trace = if close {
+            ResponseTemplate::new(200)
+                .insert_header("connection", "close")
+                .set_body_string(body)
+        } else {
+            ResponseTemplate::new(200).set_body_string(body)
+        };
+        Mock::given(method("GET"))
+            .and(path("/cdn-cgi/trace"))
+            .respond_with(trace)
+            .expect(2)
+            .mount(&server)
+            .await;
+        let ticket = format!("gAAAAA{}", "T".repeat(286));
+        Mock::given(method("POST"))
+            .and(path("/codex/responses"))
+            .respond_with(
+                ResponseTemplate::new(200).insert_header("x-codex-turn-state", ticket.as_str()),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryAccountStore::default());
+        let id = "acct_ticket_trace";
+        store
+            .seed_oauth_credential(ImportCodexOAuthCredential {
+                account_id: id.to_owned(),
+                name: "trace".to_owned(),
+                secret: secret("trace-private-token"),
+                verified_account: profile("trace-user"),
+                next_refresh_at: None,
+                enabled: true,
+            })
+            .await;
+        let mut config = valid_config();
+        config.config.api.base_url = server.uri();
+        let mut bundle = provider_openai::initialize(
+            config.config,
+            provider_ports_with(store, Arc::new(TestOAuthPending::default())),
+        )
+        .await
+        .unwrap();
+        let admin = bundle.admin_provider();
+        admin
+            .update_codex_tickets(
+                json!({"enabled":true,"proxyUrl":server.uri(),"accountIds":[id],"revision":0}),
+            )
+            .await
+            .unwrap();
+        for contribution in bundle.take_worker_contributions() {
+            if let WorkerContribution::Registration(registration) = contribution
+                && registration.id.owner() == "openai-codex-tickets"
+                && let WorkerRunnable::Scheduled { task, .. } = registration.runnable
+            {
+                task.run_cycle(gateway_core::task::WorkerCycleContext::new(
+                    registration.id,
+                    None,
+                    CancellationToken::new(),
+                ))
+                .await
+                .unwrap();
+            }
+        }
+        let view = admin.codex_tickets().await.unwrap();
+        for model in view["accounts"][0]["models"].as_array().unwrap() {
+            assert_eq!(model["successes"], 1, "{view}");
+            assert_eq!(
+                model["uniqueIps"], expected_ips,
+                "close={close}, body={body}, {view}"
+            );
+            assert_eq!(model["unknownIpAttempts"], 1 - expected_ips);
+        }
+        for request in server.received_requests().await.unwrap() {
+            if request.url.path() == "/cdn-cgi/trace" {
+                assert!(!request.headers.contains_key("authorization"));
+                assert!(!request.headers.contains_key("chatgpt-account-id"));
+                assert!(!request.headers.contains_key("cookie"));
+            }
+        }
+        assert!(!view.to_string().contains("trace-private-token"));
+        assert!(!view.to_string().contains("TTTTTTTT"));
+    }
+}
+
 fn valid_config() -> TestOpenAiConfig {
     let mut config = OpenAiConfig::default();
     config.wire_profile = CodexWireProfileConfig {

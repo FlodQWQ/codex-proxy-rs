@@ -27,6 +27,7 @@ import AccountStatusBadge from './components/AccountStatusBadge/index.vue'
 import AccountTableActions from './components/AccountTableActions.vue'
 import AccountTableIdentity from './components/AccountTableIdentity.vue'
 import AccountTableUsage from './components/AccountTableUsage.vue'
+import AccountTicketStatus from './components/AccountTicketStatus.vue'
 import AccountUsagePanel from './components/AccountUsagePanel.vue'
 import CodexTicketsModal from './components/CodexTicketsModal.vue'
 import { useAccountBatchEditor } from './composables/useAccountBatchEditor'
@@ -36,10 +37,12 @@ import { useAccountImportTasks } from './composables/useAccountImportTasks'
 import { useAccountMutations } from './composables/useAccountMutations'
 import { useAccountsQuery } from './composables/useAccountsQuery'
 import { useAccountsTable } from './composables/useAccountsTable'
+import { useCodexTicketStatus } from './composables/useCodexTicketStatus'
 import { accountColumns, derivedAccountStatus } from './constants'
 
 const selectedIds = ref<Set<string>>(new Set())
 const showCodexTickets = ref(false)
+const { ticketAccounts, ticketsEnabled, ticketStatusError, reloadTicketStatus } = useCodexTicketStatus()
 const { visibleColumns, columnOptions, setColumnVisible, resetColumns } = useTableColumns(accountColumns, 'accounts')
 const {
   loading,
@@ -231,6 +234,7 @@ const {
             <BaseButton variant="secondary" @click="showCodexTickets = true">
               <Ticket class="size-4" />292 打票
             </BaseButton>
+            <span v-if="ticketStatusError" role="status" class="text-cp-xs text-cp-warning-text">打票状态读取失败</span>
             <BaseTableColumnSettings
               :options="columnOptions"
               @change="setColumnVisible"
@@ -313,6 +317,10 @@ const {
             </template>
 
             <template #usage="{ row }">
+              <AccountTicketStatus
+                v-if="ticketAccounts.has(row.id)" :account="ticketAccounts.get(row.id)!"
+                :enabled="ticketsEnabled" :error="ticketStatusError"
+              />
               <AccountTableUsage
                 :account="row"
                 :refreshing="refreshingQuotaAccountIds.has(row.id) || refreshingQuotas"
@@ -405,7 +413,7 @@ const {
       </div>
     </section>
 
-    <CodexTicketsModal v-model="showCodexTickets" />
+    <CodexTicketsModal v-model="showCodexTickets" @saved="reloadTicketStatus" />
     <AccountConnectionTestModal
       v-model="showConnectionTestModal"
       v-model:selected-model="connectionTestSelectedModel"

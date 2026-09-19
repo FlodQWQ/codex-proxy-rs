@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { TicketSettings } from '@/api/modules/codex-tickets'
 import { RefreshCw } from '@lucide/vue'
 import { onScopeDispose, ref, watch } from 'vue'
 import { getAccounts } from '@/api'
@@ -12,16 +13,7 @@ import BaseModal from '@/components/base/BaseModal/index.vue'
 import BaseSwitch from '@/components/base/BaseSwitch.vue'
 import { toast } from '@/components/base/BaseToast'
 
-interface Attempt { at: number, status: number, length: number, success: boolean, result: string }
-interface TicketModel { model: string, ready: boolean, blocked: boolean, remainingSeconds: number, attempts: number, successes: number, lastAttempt: Attempt | null }
-interface TicketSettings {
-  enabled: boolean
-  revision: number
-  accountIds: string[]
-  proxyConfigured: boolean
-  proxyEndpoint: string | null
-  accounts: Array<{ accountId: string, name: string, enabled: boolean, models: TicketModel[] }>
-}
+const emit = defineEmits<{ saved: [] }>()
 const open = defineModel<boolean>({ required: true })
 const loading = ref(false)
 const saving = ref(false)
@@ -92,6 +84,7 @@ async function save() {
     proxyUrl.value = ''
     editRevision.value = state.value.revision
     toast.success('打票设置已保存')
+    emit('saved')
   }
   catch { /* 请求层显示具体错误，保留表单便于修正。 */ }
   finally { saving.value = false }
@@ -164,7 +157,8 @@ function date(at?: number) {
             <span :class="model.ready ? 'text-cp-success-text' : 'text-cp-warning-text'">{{ model.ready ? `剩余 ${Math.floor(model.remainingSeconds / 60)} 分钟` : model.blocked ? '缺票，模型暂停' : '暂无有效门票' }}</span>
           </div>
           <div class="text-cp-text-secondary">
-            {{ model.attempts }} 次尝试 · 成功率 {{ model.attempts ? `${(100 * model.successes / model.attempts).toFixed(1)}%` : '-' }}
+            {{ model.uniqueIps }} IP · {{ model.attempts }} 次尝试 · 成功率 {{ model.attempts ? `${(100 * model.successes / model.attempts).toFixed(1)}%` : '-' }}
+            <span v-if="model.unknownIpAttempts"> · {{ model.unknownIpAttempts }} 次 IP 未知</span>
           </div>
           <div class="text-cp-text-tertiary">
             {{ date(model.lastAttempt?.at) }} · HTTP {{ model.lastAttempt?.status || '-' }} · {{ model.lastAttempt?.length ?? 0 }} B

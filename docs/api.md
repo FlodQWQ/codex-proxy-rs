@@ -396,8 +396,18 @@ HTTP 和 WebSocket 出站使用已取得票据覆盖 turn-state，不在业务�
 
 票据与设置保存在 `host.runtime_data_dir/codex-tickets.json`，需随运行目录备份。
 凭据版本变化时旧票不再使用。总开关默认关闭，正常会话 turn-state 的既有处理不受关闭状态影响。
-当前尝试摘要包含时间、HTTP 状态、长度和成功率，不记录真实出口 IP；
-代理入口地址不代表实际出口，不能用于推算尝试过多少 IP。
+每次采集使用独立 HTTP/1 连接池，先无账号凭据请求上游同源 `/cdn-cgi/trace`，
+再在同一池内打票并关闭连接；仅当两次响应的 TCP 本地/远端地址与端口均一致时，
+才将 trace 返回的公网 IP 记作该次出口。trace 最多读取 4096 字节、最多等待五秒；
+失败、非法地址或重新建连时仍然打票，但 IP 记为未知，不用代理入口地址代替。
+
+每个账号/模型保留最近一小时最多 1000 次尝试。模型摘要包含 `attempts`、`successes`、
+`successRate`（百分数，无尝试时 null）、`uniqueIps`（已确认且去重）、`unknownIpAttempts`、
+`lastAttempt`、`expiresAt`（Unix 秒，缺票时 null）和 `ips`。`ips` 按最近尝试倒序，
+每项含 `ip`、`attempts`、`successes`、`successRate`、`lastAttempt`；未知 IP 单独归入 null 项。
+尝试记录包含 `at`、`ip`、`status`、`length`、`success`、`result`，不含账号令牌或票据。
+旧版本没有 IP 的记录兼容读取并计入未知次数，旧 IP 记录不会伪造回填。
+账号列表直接展示 Astra/Sol 倒计时和摘要，点击模型可查看同一统计窗口内的 IP 明细。
 
 账号 API 使用统一路由，不存在 Provider Instance 或 Provider 专属账号路由。需要 Provider 的请求只接受
 `provider: "openai" | "xai"`。

@@ -131,6 +131,7 @@ pub async fn initialize(
             repository.clone(),
             profile.clone(),
             config.ticket_state_path(),
+            config.base_url().to_owned(),
         )
         .await
         .map_err(|_| OpenAiInitializeError::TicketState)?,

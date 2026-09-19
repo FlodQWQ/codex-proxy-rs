@@ -12,6 +12,8 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Mutex, time::Duration};
 
 const MODELS: [&str; 2] = ["gpt-6-astra", "gpt-5.6-sol"];
 const TTL: i64 = 3600;
+mod telemetry;
+mod trace;
 
 #[derive(Default, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -25,6 +27,8 @@ struct Settings {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Attempt {
+    #[serde(default)]
+    ip: Option<String>,
     at: i64,
     status: u16,
     length: usize,
@@ -47,6 +51,7 @@ struct State {
 }
 
 pub(crate) struct CodexTicketService {
+    base_url: String,
     repository: CodexCredentialRepository,
     profile: CodexWireProfileState,
     path: PathBuf,
@@ -72,6 +77,7 @@ impl CodexTicketService {
         repository: CodexCredentialRepository,
         profile: CodexWireProfileState,
         path: PathBuf,
+        base_url: String,
     ) -> Result<Self, std::io::Error> {
         let state = match tokio::fs::read(&path).await {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -80,6 +86,7 @@ impl CodexTicketService {
             Err(e) => return Err(e),
         };
         Ok(Self {
+            base_url,
             repository,
             profile,
             path,
@@ -149,13 +156,13 @@ impl CodexTicketService {
             let now = Utc::now().timestamp();
             let models: Vec<Value> = MODELS.iter().map(|model| {
                 let record = state.records.get(&key(id, model)).cloned().unwrap_or_default();
-                let attempts: Vec<_> = record.attempts.iter().filter(|a| a.at >= now - TTL).collect();
-                let success = attempts.iter().filter(|a| a.success).count();
                 let ready = valid(&record, now, account.revision().get());
-                json!({"model":model,"ready":ready,"remainingSeconds":if ready {record.expires-now} else {0},
-                    "blocked":state.settings.enabled && account.enabled() && !ready,
-                    "attempts":attempts.len(),"successes":success,
-                    "lastAttempt":record.attempts.last(),"recentAttempts":attempts})
+                let mut view = telemetry::summary(&record.attempts, now);
+                let fields = view.as_object_mut().expect("ticket summary object");
+                fields.extend(json!({"model":model,"ready":ready,"remainingSeconds":if ready {record.expires-now} else {0},
+                    "expiresAt":if ready {Some(record.expires)} else {None},
+                    "blocked":state.settings.enabled && account.enabled() && !ready}).as_object().unwrap().clone());
+                view
             }).collect();
             accounts.push(json!({"accountId":id,"name":account.name(),"enabled":account.enabled(),"models":models}));
         }
@@ -312,10 +319,11 @@ impl CodexTicketService {
                 if valid(&cached, now + 600, account.revision().get()) {
                     continue;
                 }
-                let (ticket, status, result) =
+                let (ticket, status, result, ip) =
                     self.probe(&account, model, &settings.proxy_url).await;
                 let success = status == 200 && ticket.len() == 292 && ticket.starts_with("gAAAAA");
                 let attempt = Attempt {
+                    ip,
                     at: now,
                     status,
                     length: ticket.len(),
@@ -369,7 +377,7 @@ impl CodexTicketService {
         account: &ProviderAccount,
         model: &str,
         proxy: &str,
-    ) -> (String, u16, String) {
+    ) -> (String, u16, String, Option<String>) {
         let operation = async {
             let runtime = self
                 .repository
@@ -398,19 +406,25 @@ impl CodexTicketService {
             let builder = Client::builder()
                 .no_proxy()
                 .http1_only()
-                .pool_max_idle_per_host(0)
+                .pool_max_idle_per_host(1)
                 .redirect(Policy::none())
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(25))
                 .proxy(Proxy::all(proxy).map_err(|_| "proxy_error")?);
             let client = crate::transport::tls::build_reqwest_client_with_custom_ca(builder)
                 .map_err(|_| "proxy_error")?;
-            let response = client.post("https://chatgpt.com/backend-api/codex/responses")
+            let endpoint = crate::transport::endpoint_url(
+                &self.base_url,
+                crate::transport::CODEX_RESPONSES_PATH,
+            );
+            let observed = trace::observe(&client, &endpoint).await;
+            let response = client.post(&endpoint)
                 .headers(headers).header("connection","close").header("accept","text/event-stream")
                 .header("openai-beta","responses=experimental").header("session_id",uuid::Uuid::new_v4().to_string())
                 .json(&json!({"model":model,"store":false,"stream":true,"instructions":"Reply with exactly: pong",
                     "input":[{"role":"user","content":[{"type":"input_text","text":"ping"}]}]}))
                 .send().await.map_err(|_| "network_error")?;
+            let ip = observed.and_then(|trace| trace.confirm(&response));
             let status = response.status().as_u16();
             let state = response
                 .headers()
@@ -419,20 +433,20 @@ impl CodexTicketService {
                 .unwrap_or("")
                 .trim()
                 .to_owned();
-            Ok::<_, &str>((state, status))
+            Ok::<_, &str>((state, status, ip))
         };
         match tokio::time::timeout(Duration::from_secs(25), operation).await {
-            Ok(Ok((ticket, status))) => {
+            Ok(Ok((ticket, status, ip))) => {
                 let result = if status == 200 && ticket.len() == 292 && ticket.starts_with("gAAAAA")
                 {
                     "success"
                 } else {
                     "miss"
                 };
-                (ticket, status, result.to_owned())
+                (ticket, status, result.to_owned(), ip)
             }
-            Ok(Err(reason)) => (String::new(), 0, reason.to_owned()),
-            Err(_) => (String::new(), 0, "timeout".to_owned()),
+            Ok(Err(reason)) => (String::new(), 0, reason.to_owned(), None),
+            Err(_) => (String::new(), 0, "timeout".to_owned(), None),
         }
     }
 }
