@@ -1,0 +1,88 @@
+name: Fork Build
+
+on:
+  push:
+    branches: [main, cpr-custom]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'release/version.yaml'
+      - '.github/workflows/fork-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.7.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build frontend
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend format:check
+          pnpm --dir frontend build
+
+      - name: Cache Cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            backend/target
+          key: fork-bookworm-rust198-${{ hashFiles('backend/Cargo.lock', 'backend/**/Cargo.toml') }}-${{ github.sha }}
+          restore-keys: |
+            fork-bookworm-rust198-${{ hashFiles('backend/Cargo.lock', 'backend/**/Cargo.toml') }}-
+
+      # Debian 12 构建环境避免产物依赖服务器没有的新版 glibc。
+      - name: Build Linux binary
+        env:
+          CPR_GIT_SHA: ${{ github.sha }}
+          CPR_BUILD_TYPE: release
+        run: |
+          mkdir -p "$HOME/.cargo" dist/web
+          version=$(ruby -ryaml -e 'puts YAML.load_file("release/version.yaml").fetch("version").delete_prefix("v")')
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e CARGO_HOME=/cargo -e HOME=/tmp \
+            -e CPR_VERSION="${version}-fork.${GITHUB_SHA:0:8}" \
+            -e CPR_GIT_SHA -e CPR_BUILD_TYPE \
+            -e CPR_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -v "$HOME/.cargo:/cargo" -v "$PWD:/workspace" \
+            -w /workspace/backend \
+            rust:1.98-bookworm@sha256:828077e0f5ed0401fbd9cb5b4d5dedca23bd13c7fe032f3e8b7313e7acd2a57f \
+            cargo +1.98.0 build --release --locked --bin codex-proxy-rs
+          install -m755 backend/target/release/codex-proxy-rs dist/codex-proxy-rs
+          cp -a frontend/dist dist/web/dist
+          printf '%s\n' "$GITHUB_SHA" > dist/REVISION
+          tar -czf codex-proxy-rs-linux-amd64.tar.gz -C dist .
+          sha256sum codex-proxy-rs-linux-amd64.tar.gz > SHA256SUMS
+
+      - name: Upload build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-proxy-rs-linux-amd64-${{ github.sha }}
+          path: |
+            codex-proxy-rs-linux-amd64.tar.gz
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
