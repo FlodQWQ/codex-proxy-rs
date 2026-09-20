@@ -370,10 +370,12 @@ pub async fn initialize(
         backup_ports.dump(),
         backup_ports.object_store(),
     );
+    let system = Arc::new(DefaultSystemService::new(system));
     let key_usage = Arc::new(use_case::key_usage::DefaultKeyUsageService::new(
         auth.clone(),
         store.client_keys(),
         store.observability(),
+        system.clone(),
     ));
     let openai = Arc::new(DefaultOpenAiService::new(
         openai,
@@ -423,7 +425,7 @@ pub async fn initialize(
             registry,
             pricing_source,
         )),
-        system: Arc::new(DefaultSystemService::new(system)),
+        system,
         openai,
         xai,
         import_tasks,
