@@ -2,6 +2,7 @@
 
 mod archive;
 mod download;
+mod fork;
 mod process;
 mod release;
 mod state;
@@ -47,8 +48,6 @@ pub use self::release::validate_download_url;
 const APP_BINARY_NAME: &str = "codex-proxy-rs";
 const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com/repos";
 const DEFAULT_UPDATE_REPOSITORY: &str = "FlodQWQ/codex-proxy-rs";
-const FORK_MANUAL_UPDATE_REASON: &str =
-    "定制版仅检查更新，请下载 fork 发布包并手动执行 deploy/update-cpr.sh";
 
 type OperationError = SystemOperationError;
 
@@ -178,6 +177,13 @@ impl SystemUpdateConfig {
         if channel == UpdateChannel::Fork && repository != DEFAULT_UPDATE_REPOSITORY {
             return Some("定制版更新源必须为 FlodQWQ/codex-proxy-rs".to_owned());
         }
+        if channel == UpdateChannel::Fork
+            && (env::consts::OS != "linux"
+                || env::consts::ARCH != "x86_64"
+                || self.deployment_mode != "binary")
+        {
+            return Some("定制版在线更新需要 Linux x86_64 二进制部署".to_owned());
+        }
         if let Err(error) = release::validate_repository(repository) {
             return Some(error.to_string());
         }
@@ -244,10 +250,6 @@ impl ProcessSystemOperations {
         &self,
         target_version: Option<String>,
     ) -> Result<SystemOperationAccepted, OperationError> {
-        // 定制包还包含独立探针，必须由部署脚本与主程序一起替换。
-        if version_channel(&self.config.version) == Some(UpdateChannel::Fork) {
-            return Err(conflict(FORK_MANUAL_UPDATE_REASON));
-        }
         let operation_lock = Arc::clone(&self.operation_lock)
             .try_lock_owned()
             .map_err(|_| conflict("system operation is already running"))?;
@@ -376,11 +378,17 @@ impl ProcessSystemOperations {
         if archive.size == 0 || archive.size > MAX_DOWNLOAD_SIZE {
             return Err(invalid("release archive size is invalid"));
         }
+        let is_fork = version_channel(version) == Some(UpdateChannel::Fork);
+        let checksum_name = if is_fork {
+            "SHA256SUMS"
+        } else {
+            "checksums.txt"
+        };
         let checksum = release
             .assets
             .iter()
-            .find(|asset| asset.name == "checksums.txt")
-            .ok_or_else(|| upstream("release checksums.txt is required"))?;
+            .find(|asset| asset.name == checksum_name)
+            .ok_or_else(|| upstream(format!("release {checksum_name} is required")))?;
         if checksum.size == 0 || checksum.size > MAX_CHECKSUM_SIZE {
             return Err(invalid("release checksum size is invalid"));
         }
@@ -424,11 +432,15 @@ impl ProcessSystemOperations {
             .success(Some(operation_id), Some("extract"), "更新包解压完成");
         self.events
             .info(Some(operation_id), Some("replace"), "正在替换应用文件");
-        replace_release_files(
-            &self.config.executable_path()?,
-            self.config.web_dist_dir()?,
-            extracted,
-        )?;
+        if is_fork {
+            fork::install(&self.config, extracted, version)?;
+        } else {
+            replace_release_files(
+                &self.config.executable_path()?,
+                self.config.web_dist_dir()?,
+                extracted,
+            )?;
+        }
         self.events
             .success(Some(operation_id), Some("replace"), "应用文件替换完成");
         Ok(())
@@ -518,7 +530,11 @@ impl SystemOperations for ProcessSystemOperations {
             None,
             &self.config.version,
         )?;
-        let result = rollback_release(&self.config);
+        let result = if version_channel(&self.config.version) == Some(UpdateChannel::Fork) {
+            fork::rollback(&self.config)
+        } else {
+            rollback_release(&self.config)
+        };
         finish(
             &self.config.update_state_file,
             &operation_id,
@@ -556,7 +572,9 @@ impl SystemOperations for ProcessSystemOperations {
         if !self.config.self_restart_enabled {
             return Err(conflict("self restart is disabled"));
         }
-        let message = if self.config.deployment_mode == "docker" {
+        let message = if self.config.deployment_mode == "docker"
+            || environment_value("CPR_RESTART_VIA_SUPERVISOR").as_deref() == Some("true")
+        {
             "已安排进程内重启"
         } else {
             spawn_replacement(&self.config)?;
@@ -589,13 +607,8 @@ fn base_update_detail(
         release_url: None,
         notes: None,
         cached: false,
-        update_supported: unsupported_reason.is_none()
-            && warning.is_none()
-            && version_channel(&config.version) != Some(UpdateChannel::Fork),
-        unsupported_reason: unsupported_reason.or_else(|| {
-            (version_channel(&config.version) == Some(UpdateChannel::Fork))
-                .then(|| FORK_MANUAL_UPDATE_REASON.to_owned())
-        }),
+        update_supported: unsupported_reason.is_none() && warning.is_none(),
+        unsupported_reason,
         warning,
     }
 }

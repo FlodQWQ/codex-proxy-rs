@@ -24,7 +24,7 @@ const TARGET_VERSION: &str = "1.9.9";
 const CROSS_MAJOR_VERSION: &str = "2.0.0";
 
 #[tokio::test]
-async fn fork_checks_should_use_only_fork_releases_and_require_manual_installation() {
+async fn fork_checks_should_use_only_fork_releases() {
     for (target, allowed) in [
         ("3.12.1-fork.2", true),
         ("3.13.0-fork.3", true),
@@ -48,24 +48,21 @@ async fn fork_checks_should_use_only_fork_releases_and_require_manual_installati
         let service = ProcessSystemOperations::new(CancellationToken::new(), config);
         let detail = service.update_detail(true).await.expect("fork check");
         assert_eq!(detail.has_update, allowed, "{target}");
-        assert!(!detail.update_supported);
-        assert!(
-            detail
-                .unsupported_reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("手动"))
-        );
+        assert!(detail.update_supported);
+        assert!(detail.unsupported_reason.is_none());
         assert!(detail.warning.is_none());
         assert_eq!(
             service.version().await.expect("version").update_channel,
             "fork"
         );
-        assert!(
-            service
-                .perform_update(Some(target.to_owned()))
-                .await
-                .is_err()
-        );
+        if !allowed {
+            assert!(
+                service
+                    .perform_update(Some(target.to_owned()))
+                    .await
+                    .is_err()
+            );
+        }
         assert_eq!(
             fs::read(fixture.executable()).expect("binary"),
             b"old-binary"
@@ -92,6 +89,189 @@ async fn fork_checks_should_reject_an_upstream_repository_override_without_netwo
             .expect("requests")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn fork_update_should_install_and_rollback_the_complete_bundle() {
+    let fixture = Fixture::new();
+    let server = MockServer::start().await;
+    let config = mount_fork(&fixture, &server, "valid").await;
+    let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+    let status = complete_update(&service, "3.12.1-fork.2").await;
+    assert_eq!(status.operation.status, SystemOperationStatus::Succeeded);
+    assert!(status.need_restart);
+    assert_eq!(fs::read(fixture.executable()).unwrap(), fork_elf());
+    assert_eq!(
+        fs::read(fixture.root.path().join("codex-ticket-probe")).unwrap(),
+        fork_elf()
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.path().join("VERSION")).unwrap(),
+        "3.12.1-fork.2"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.web().join("index.html")).unwrap(),
+        "new-web"
+    );
+    assert!(
+        service
+            .perform_update(Some("3.12.1-fork.3".to_owned()))
+            .await
+            .is_err()
+    );
+    service.rollback().await.expect("whole bundle rollback");
+    assert_fork_unchanged(&fixture);
+}
+
+#[tokio::test]
+async fn fork_update_should_reject_bad_bundles_before_replacing_files() {
+    for failure in [
+        "checksum",
+        "version",
+        "probe",
+        "revision",
+        "duplicate",
+        "missing",
+        "web",
+        "symlink",
+    ] {
+        let fixture = Fixture::new();
+        let server = MockServer::start().await;
+        let config = mount_fork(&fixture, &server, failure).await;
+        let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+        let status = complete_update(&service, "3.12.1-fork.2").await;
+        assert_eq!(
+            status.operation.status,
+            SystemOperationStatus::Failed,
+            "{failure}"
+        );
+        assert!(!status.need_restart);
+        assert_fork_unchanged(&fixture);
+    }
+}
+
+#[tokio::test]
+async fn fork_update_should_restore_all_files_when_a_late_swap_fails() {
+    let fixture = Fixture::new();
+    let server = MockServer::start().await;
+    let config = mount_fork(&fixture, &server, "valid").await;
+    // 阻塞最后的目录交换，确保已换入的主程序、探针与版本元数据被恢复。
+    fs::write(
+        fixture.web().with_file_name("dist.rollback-swap"),
+        "blocked",
+    )
+    .unwrap();
+    let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+    let status = complete_update(&service, "3.12.1-fork.2").await;
+    assert_eq!(status.operation.status, SystemOperationStatus::Failed);
+    assert_fork_unchanged(&fixture);
+}
+
+fn assert_fork_unchanged(fixture: &Fixture) {
+    assert_eq!(fs::read(fixture.executable()).unwrap(), b"old-binary");
+    assert_eq!(
+        fs::read(fixture.root.path().join("codex-ticket-probe")).unwrap(),
+        b"old-probe"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.path().join("VERSION")).unwrap(),
+        "3.12.1-fork.1"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.path().join("REVISION")).unwrap(),
+        "a".repeat(40)
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.web().join("index.html")).unwrap(),
+        "old-web"
+    );
+}
+
+fn fork_elf() -> Vec<u8> {
+    let mut bytes = vec![0; 20];
+    bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
+    bytes[18] = 0x3e;
+    bytes
+}
+
+async fn mount_fork(fixture: &Fixture, server: &MockServer, failure: &str) -> SystemUpdateConfig {
+    fs::write(fixture.root.path().join("codex-ticket-probe"), "old-probe").unwrap();
+    fs::write(fixture.root.path().join("VERSION"), "3.12.1-fork.1").unwrap();
+    fs::write(fixture.root.path().join("REVISION"), "a".repeat(40)).unwrap();
+    let mut config = fixture.config(&format!("{}/repos", server.uri()));
+    config.version = "3.12.1-fork.1".to_owned();
+    config.update_repository = Some("FlodQWQ/codex-proxy-rs".to_owned());
+    let mut tar = Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+    let elf = fork_elf();
+    append_file(&mut tar, "./codex-proxy-rs", &elf, false);
+    if failure != "missing" {
+        append_file(
+            &mut tar,
+            "./codex-ticket-probe",
+            if failure == "probe" { b"bad" } else { &elf },
+            false,
+        );
+    }
+    append_file(
+        &mut tar,
+        "./VERSION",
+        if failure == "version" {
+            b"3.12.1-fork.3"
+        } else {
+            b"3.12.1-fork.2"
+        },
+        false,
+    );
+    append_file(
+        &mut tar,
+        "./REVISION",
+        if failure == "revision" {
+            b"bad"
+        } else {
+            b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        false,
+    );
+    if failure != "web" {
+        append_file(&mut tar, "./web/dist/index.html", b"new-web", false);
+    }
+    if failure == "duplicate" {
+        append_file(&mut tar, "VERSION", b"3.12.1-fork.2", false);
+    }
+    if failure == "symlink" {
+        let mut header = Header::new_gnu();
+        header.set_entry_type(EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o755);
+        header.set_link_name("/etc/passwd").unwrap();
+        header.set_cksum();
+        tar.append_data(&mut header, "link", std::io::empty())
+            .unwrap();
+    }
+    let archive = tar.into_inner().unwrap().finish().unwrap();
+    let name = "codex-proxy-rs-linux-amd64.tar.gz";
+    let hash = if failure == "checksum" {
+        "0".repeat(64)
+    } else {
+        hex::encode(Sha256::digest(&archive))
+    };
+    let checksum = format!("{hash}  {name}\n");
+    Mock::given(method("GET")).and(path("/repos/FlodQWQ/codex-proxy-rs/releases"))
+        .respond_with(release_response("3.12.1-fork.2", vec![
+            serde_json::json!({"name": name, "browser_download_url": format!("{}/archive", server.uri()), "size": archive.len()}),
+            serde_json::json!({"name": "SHA256SUMS", "browser_download_url": format!("{}/checksums", server.uri()), "size": checksum.len()}),
+        ])).mount(server).await;
+    Mock::given(method("GET"))
+        .and(path("/archive"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/checksums"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(checksum))
+        .mount(server)
+        .await;
+    config
 }
 
 #[tokio::test]

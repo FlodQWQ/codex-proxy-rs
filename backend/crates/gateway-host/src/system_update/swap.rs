@@ -132,7 +132,7 @@ fn replace_dir(current: &Path, backup: &Path, replacement: &Path) -> Result<(), 
     Ok(())
 }
 
-fn swap_file(current: &Path, backup: &Path) -> io::Result<()> {
+pub(super) fn swap_file(current: &Path, backup: &Path) -> io::Result<()> {
     if !current.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -157,7 +157,7 @@ fn swap_file(current: &Path, backup: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn swap_dir(current: &Path, backup: &Path) -> io::Result<()> {
+pub(super) fn swap_dir(current: &Path, backup: &Path) -> io::Result<()> {
     if !current.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -220,7 +220,7 @@ fn move_dir(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 
-fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
+pub(super) fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;

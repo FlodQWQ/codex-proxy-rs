@@ -217,9 +217,8 @@ pub(crate) fn detail_from_release(
         release_url: release.html_url.clone(),
         notes: release.body.clone().or_else(|| release.name.clone()),
         cached: false,
-        update_supported: version_channel(&config.version) != Some(UpdateChannel::Fork),
-        unsupported_reason: (version_channel(&config.version) == Some(UpdateChannel::Fork))
-            .then(|| super::FORK_MANUAL_UPDATE_REASON.to_owned()),
+        update_supported: true,
+        unsupported_reason: None,
         warning: None,
     }
 }
@@ -237,6 +236,17 @@ pub(crate) fn select_archive<'a>(
     release: &'a GitHubRelease,
     version: &str,
 ) -> Result<&'a GitHubAsset, OperationError> {
+    if version_channel(version) == Some(UpdateChannel::Fork) {
+        return release
+            .assets
+            .iter()
+            .find(|asset| {
+                env::consts::OS == "linux"
+                    && env::consts::ARCH == "x86_64"
+                    && asset.name == "codex-proxy-rs-linux-amd64.tar.gz"
+            })
+            .ok_or_else(|| conflict("定制包仅支持 Linux x86_64，且必须包含完整发布归档"));
+    }
     let os = platform_os_aliases();
     let arch = platform_arch_aliases();
     let normalized = normalize_version(version);

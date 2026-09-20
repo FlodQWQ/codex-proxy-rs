@@ -119,7 +119,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v${FORK_VERSION}"
-          printf '定制分支：cpr-custom\n提交：%s\n\n仅检查更新，不在线替换文件。请下载压缩包、SHA256SUMS 和 update-cpr.sh，先运行 bash update-cpr.sh --check 压缩包 SHA256SUMS；确认后以 root 运行 --apply。\n\n升级前请阅读 deploy/FORK-UPDATES.md。\n' "$GITHUB_SHA" > fork-notes.md
+          printf '定制分支：cpr-custom\n提交：%s\n\n支持网页立即更新完整定制包，更新后点击重启服务。旧版本首次仍需手动安装并配置更新目录权限及重启方式。手动更新可下载压缩包、SHA256SUMS 和 update-cpr.sh，先运行 --check，再运行 --apply。\n\n升级前请备份数据库并阅读 deploy/FORK-UPDATES.md。\n' "$GITHUB_SHA" > fork-notes.md
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release already exists; refusing to overwrite published assets" >&2
             exit 1

@@ -1,5 +1,6 @@
 //! Release tar.gz 安全解包与制品归一化。
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -13,6 +14,7 @@ const MAX_ARCHIVE_FILES: usize = 20_000;
 pub(crate) struct ExtractedRelease {
     pub(crate) binary_path: PathBuf,
     pub(crate) web_dist_dir: Option<PathBuf>,
+    pub(crate) companions: Vec<PathBuf>,
 }
 
 pub(crate) fn extract_release(
@@ -29,6 +31,8 @@ pub(crate) fn extract_release(
     let mut found_web = false;
     let mut extracted_size = 0_u64;
     let mut file_count = 0_usize;
+    let mut companions = Vec::new();
+    let mut destinations = HashSet::new();
 
     for entry in archive
         .entries()
@@ -44,7 +48,13 @@ pub(crate) fn extract_release(
             return Err(invalid("release archive contains an unsafe path"));
         }
         if !entry.header().entry_type().is_file() {
+            if !entry.header().entry_type().is_dir() {
+                return Err(invalid("release archive contains a link or special file"));
+            }
             continue;
+        }
+        if entry.header().mode().unwrap_or(0o7000) & 0o7000 != 0 {
+            return Err(invalid("release archive contains special permissions"));
         }
         file_count = file_count.saturating_add(1);
         extracted_size = extracted_size.saturating_add(entry.header().size().unwrap_or(u64::MAX));
@@ -52,6 +62,20 @@ pub(crate) fn extract_release(
             return Err(invalid("release archive expands beyond safety limits"));
         }
 
+        if matches!(
+            path.to_str().map(|value| value.trim_start_matches("./")),
+            Some("codex-ticket-probe" | "VERSION" | "REVISION")
+        ) {
+            let target = temp_dir.join(path.file_name().expect("companion file"));
+            if !destinations.insert(target.clone()) {
+                return Err(invalid("release archive contains duplicate files"));
+            }
+            entry
+                .unpack(&target)
+                .map_err(|error| internal(format!("failed to extract companion: {error}")))?;
+            companions.push(target);
+            continue;
+        }
         if path.file_name().is_some_and(|name| name == APP_BINARY_NAME) {
             if found_binary {
                 return Err(invalid("release archive contains duplicate binaries"));
@@ -67,6 +91,9 @@ pub(crate) fn extract_release(
                 continue;
             }
             let target = web_dist_dir.join(relative);
+            if !destinations.insert(target.clone()) {
+                return Err(invalid("release archive contains duplicate web assets"));
+            }
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|error| {
                     internal(format!("failed to create web asset dir: {error}"))
@@ -90,6 +117,7 @@ pub(crate) fn extract_release(
     Ok(ExtractedRelease {
         binary_path,
         web_dist_dir: found_web.then_some(web_dist_dir),
+        companions,
     })
 }
 
