@@ -1769,6 +1769,89 @@ async fn codex_tickets_ip_summary_excludes_expired_future_and_preserves_unknown_
 }
 
 #[tokio::test]
+async fn codex_tickets_429_pauses_all_models_across_cycles_and_restart_until_expiry() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/cdn-cgi/trace"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("ip=8.8.8.8\n"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/codex/responses"))
+        .respond_with(ResponseTemplate::new(429))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let store = Arc::new(MemoryAccountStore::default());
+    let id = "acct_ticket_cooldown";
+    store
+        .seed_oauth_credential(ImportCodexOAuthCredential {
+            account_id: id.to_owned(),
+            name: "cooldown".to_owned(),
+            secret: secret("cooldown-private-token"),
+            verified_account: profile("cooldown-user"),
+            next_refresh_at: None,
+            enabled: true,
+        })
+        .await;
+    let mut config = valid_config();
+    config.config.api.base_url = server.uri();
+    let state_path = config._runtime.path().join("deploy/codex-tickets.json");
+    for phase in 0..3 {
+        if phase == 2 {
+            let mut state: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+            state["rate_limited_until"][id] = json!(Utc::now().timestamp() - 1);
+            std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        }
+        let mut bundle = provider_openai::initialize(
+            config.config.clone(),
+            provider_ports_with(Arc::clone(&store), Arc::new(TestOAuthPending::default())),
+        )
+        .await
+        .unwrap();
+        let admin = bundle.admin_provider();
+        if phase == 0 {
+            admin
+                .update_codex_tickets(
+                    json!({"enabled":true,"proxyUrl":server.uri(),"accountIds":[id],"revision":0}),
+                )
+                .await
+                .unwrap();
+        }
+        for contribution in bundle.take_worker_contributions() {
+            if let WorkerContribution::Registration(registration) = contribution
+                && registration.id.owner() == "openai-codex-tickets"
+                && let WorkerRunnable::Scheduled { task, .. } = registration.runnable
+            {
+                for _ in 0..3 {
+                    task.run_cycle(gateway_core::task::WorkerCycleContext::new(
+                        registration.id.clone(),
+                        None,
+                        CancellationToken::new(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+            }
+        }
+        let view = admin.codex_tickets().await.unwrap();
+        assert!(
+            view["accounts"][0]["rateLimitedUntil"].as_i64().unwrap()
+                > Utc::now().timestamp()
+        );
+        let posts = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/codex/responses")
+            .count();
+        assert_eq!(posts, if phase == 2 { 2 } else { 1 });
+    }
+}
+
+#[tokio::test]
 async fn codex_tickets_trace_reuses_connection_without_credentials_and_rejects_reconnects() {
     for (close, body, expected_ips) in [
         (false, "ip=8.8.8.8\nloc=US\n", 1),

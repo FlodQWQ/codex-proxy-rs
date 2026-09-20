@@ -13,6 +13,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Mutex, time::Duration};
 
 const MODELS: [&str; 2] = ["gpt-6-astra", "gpt-5.6-sol"];
 const TTL: i64 = 3600;
+const RATE_LIMIT_COOLDOWN: i64 = 3600;
 mod process;
 mod telemetry;
 mod trace;
@@ -50,6 +51,9 @@ struct Record {
 struct State {
     settings: Settings,
     records: BTreeMap<String, Record>,
+    // 账号额度由模型共享；独立保存，不能随票据或一小时统计窗口被清掉。
+    #[serde(default)]
+    rate_limited_until: BTreeMap<String, i64>,
 }
 
 pub(crate) struct CodexTicketService {
@@ -168,7 +172,8 @@ impl CodexTicketService {
                     "blocked":state.settings.enabled && account.enabled() && !ready}).as_object().unwrap().clone());
                 view
             }).collect();
-            accounts.push(json!({"accountId":id,"name":account.name(),"enabled":account.enabled(),"models":models}));
+            accounts.push(json!({"accountId":id,"name":account.name(),"enabled":account.enabled(),"models":models,
+                "rateLimitedUntil":state.rate_limited_until.get(id).filter(|until| **until > now)}));
         }
         let endpoint = url::Url::parse(&state.settings.proxy_url).ok().map(|u| {
             format!(
@@ -288,12 +293,16 @@ impl CodexTicketService {
         if !settings.enabled || settings.proxy_url.is_empty() {
             return Ok(());
         }
-        // 同轮并行探测账号/模型，全部完成后由 worker 等待六秒；限制八个并发以保护宿主。
+        // 账号之间并行，单账号模型串行，首次 429 后同轮其他模型也必须停止。
         let mut probes = Vec::new();
         for id in &settings.account_ids {
-            for model in MODELS {
-                probes.push(self.refresh_one(&settings, id, model));
-            }
+            let settings = &settings;
+            probes.push(async move {
+                for model in MODELS {
+                    self.refresh_one(settings, id, model).await?;
+                }
+                Ok::<(), ProviderAdminError>(())
+            });
         }
         futures::stream::iter(probes)
             .buffer_unordered(8)
@@ -332,6 +341,16 @@ impl CodexTicketService {
             return Ok(());
         }
         let now = Utc::now().timestamp();
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rate_limited_until
+            .get(id)
+            .is_some_and(|until| *until > now)
+        {
+            return Ok(());
+        }
         let cached = self
             .state
             .lock()
@@ -373,6 +392,12 @@ impl CodexTicketService {
             .clone();
         if proposed.settings.revision != settings.revision {
             return Ok(());
+        }
+        if status == 429 {
+            proposed.rate_limited_until.insert(
+                id.to_owned(),
+                Utc::now().timestamp().saturating_add(RATE_LIMIT_COOLDOWN),
+            );
         }
         let record = proposed.records.entry(key(id, model)).or_default();
         record.attempts.retain(|a| a.at >= now - TTL);
