@@ -86,7 +86,8 @@ host = config['host']
 source = host.get('system_update', {}).get('update_repository')
 if source not in (None, 'FlodQWQ/codex-proxy-rs'):
     raise SystemExit('请先将 host.system_update.update_repository 改为 FlodQWQ/codex-proxy-rs')
-if config.get('openai', {}).get('wire_profile', {}).get('residency') is not None:
+old_residency = config.get('openai', {}).get('wire_profile', {}).get('residency')
+if old_residency is not None and config.get('openai', {}).get('residency') != old_residency:
     raise SystemExit('请先将 openai.wire_profile.residency 迁移到 openai.residency')
 port = host['listen']['port']
 if not isinstance(port, int) or not 1 <= port <= 65535:

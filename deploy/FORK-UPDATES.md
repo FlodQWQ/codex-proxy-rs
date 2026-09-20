@@ -35,7 +35,20 @@ SHA-256 检测传输损坏，不替代对下载来源的信任。
 bash update-cpr.sh --check codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS
 ```
 
-确认后，在维护窗口显式执行：
+首次升级先下载同分支的 `migrate-cpr-config.py`，检查并迁移旧配置（不会重启服务）：
+
+```bash
+sudo python3 migrate-cpr-config.py --check
+sudo python3 migrate-cpr-config.py --apply
+```
+
+脚本默认读取 `/opt/codex-proxy-rs/deploy/config.yaml`，也可在命令末尾指定配置路径。
+只新增同值的 `openai.residency`，保留旧字段以兼容回滚，不改其他配置或注释。
+已有新值相同则不重复写入；新旧值冲突、重复键、YAML 别名或不支持的结构会拒绝迁移。
+写入前在原目录创建权限为 `0600` 的完整备份，通过同目录原子替换保留配置属主和权限。
+备份包含凭据，应妥善保护。迁移脚本不自动运行；与升级脚本不要并发执行。
+
+确认后，在维护窗口显式执行（使用同分支最新 `update-cpr.sh`，旧 v3.12.1-fork.11 附件会拒绝保留的旧字段）：
 
 ```bash
 sudo bash update-cpr.sh --apply codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS
@@ -57,7 +70,7 @@ sudo bash update-cpr.sh --apply codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS
 ## 配置兼容
 
 - 如显式配置了 `host.system_update.update_repository`，需改为 `FlodQWQ/codex-proxy-rs`。
-- 如有 `openai.wire_profile.residency`，先迁移到 `openai.residency`，否则脚本在停机前拒绝继续。
+- 如有 `openai.wire_profile.residency`，运行上述迁移脚本复制到 `openai.residency`；新旧值不一致时升级脚本在停机前拒绝继续。
 - 旧 `openai.wire_profile` / `xai.wire_profile` 不再读取；数据库中已有 OpenAI 身份保留，
   YAML 中定制的 xAI 身份应在管理端重新设置。
 - `/healthz` 从 YAML 的 `host.listen.port` 推导；如 systemd 环境变量另行覆盖监听地址/端口，

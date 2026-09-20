@@ -9,6 +9,8 @@ on:
       - 'release/version.yaml'
       - 'deploy/update-cpr.sh'
       - 'deploy/test-update-cpr.py'
+      - 'deploy/migrate-cpr-config.py'
+      - 'deploy/test-migrate-cpr-config.py'
       - '.github/workflows/fork-build.yml'
   workflow_dispatch:
 
@@ -51,6 +53,7 @@ jobs:
         run: |
           bash -n deploy/update-cpr.sh
           python3 deploy/test-update-cpr.py
+          python3 deploy/test-migrate-cpr-config.py
 
       - name: Cache Cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -93,6 +96,7 @@ jobs:
           printf '%s\n' "$version" > dist/VERSION
           mkdir -p dist/deploy
           cp deploy/update-cpr.sh dist/deploy/update-cpr.sh
+          cp deploy/migrate-cpr-config.py dist/deploy/migrate-cpr-config.py
           tar -czf codex-proxy-rs-linux-amd64.tar.gz -C dist .
           sha256sum codex-proxy-rs-linux-amd64.tar.gz > SHA256SUMS
 
@@ -104,6 +108,7 @@ jobs:
             codex-proxy-rs-linux-amd64.tar.gz
             SHA256SUMS
             deploy/update-cpr.sh
+            deploy/migrate-cpr-config.py
           if-no-files-found: error
           retention-days: 14
 
@@ -121,4 +126,4 @@ jobs:
           fi
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --prerelease --latest=false --title "$tag (cpr-custom)" --notes-file fork-notes.md \
-            codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS deploy/update-cpr.sh
+            codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS deploy/update-cpr.sh deploy/migrate-cpr-config.py
