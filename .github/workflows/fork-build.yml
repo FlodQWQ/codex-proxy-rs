@@ -7,6 +7,8 @@ on:
       - 'backend/**'
       - 'frontend/**'
       - 'release/version.yaml'
+      - 'deploy/update-cpr.sh'
+      - 'deploy/test-update-cpr.py'
       - '.github/workflows/fork-build.yml'
   workflow_dispatch:
 
@@ -21,6 +23,8 @@ jobs:
   linux-amd64:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,6 +47,11 @@ jobs:
           pnpm --dir frontend format:check
           pnpm --dir frontend build
 
+      - name: Test manual updater
+        run: |
+          bash -n deploy/update-cpr.sh
+          python3 deploy/test-update-cpr.py
+
       - name: Cache Cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -62,15 +71,17 @@ jobs:
         run: |
           mkdir -p "$HOME/.cargo" dist/web
           version=$(ruby -ryaml -e 'puts YAML.load_file("release/version.yaml").fetch("version").delete_prefix("v")')
+          version="${version}-fork.${GITHUB_RUN_NUMBER}"
+          echo "FORK_VERSION=$version" >> "$GITHUB_ENV"
           docker run --rm --user "$(id -u):$(id -g)" \
             -e CARGO_HOME=/cargo -e HOME=/tmp \
-            -e CPR_VERSION="${version}-fork.${GITHUB_SHA:0:8}" \
+            -e CPR_VERSION="$version" \
             -e CPR_GIT_SHA -e CPR_BUILD_TYPE \
             -e CPR_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -v "$HOME/.cargo:/cargo" -v "$PWD:/workspace" \
             -w /workspace/backend \
             rust:1.98-bookworm@sha256:828077e0f5ed0401fbd9cb5b4d5dedca23bd13c7fe032f3e8b7313e7acd2a57f \
-            cargo +1.98.0 build --release --locked --bin codex-proxy-rs
+            sh -c 'cargo +1.98.0 build --release --locked --bin codex-proxy-rs && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-host --test main system_update'
           install -m755 backend/target/release/codex-proxy-rs dist/codex-proxy-rs
           cd backend/crates/providers/openai/ticket-probe
           GOTOOLCHAIN=go1.27.0 CGO_ENABLED=0 go test ./...
@@ -79,6 +90,9 @@ jobs:
           cp -a backend/crates/providers/openai/ticket-probe dist/ticket-probe-source
           cp -a frontend/dist dist/web/dist
           printf '%s\n' "$GITHUB_SHA" > dist/REVISION
+          printf '%s\n' "$version" > dist/VERSION
+          mkdir -p dist/deploy
+          cp deploy/update-cpr.sh dist/deploy/update-cpr.sh
           tar -czf codex-proxy-rs-linux-amd64.tar.gz -C dist .
           sha256sum codex-proxy-rs-linux-amd64.tar.gz > SHA256SUMS
 
@@ -89,5 +103,22 @@ jobs:
           path: |
             codex-proxy-rs-linux-amd64.tar.gz
             SHA256SUMS
+            deploy/update-cpr.sh
           if-no-files-found: error
           retention-days: 14
+
+      # 仅定制分支发布独立 fork 通道，不触碰上游或 fork 的稳定版入口。
+      - name: Publish fork assets
+        if: github.ref == 'refs/heads/cpr-custom' && github.repository == 'FlodQWQ/codex-proxy-rs'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${FORK_VERSION}"
+          printf '定制分支：cpr-custom\n提交：%s\n\n仅检查更新，不在线替换文件。请下载压缩包、SHA256SUMS 和 update-cpr.sh，先运行 bash update-cpr.sh --check 压缩包 SHA256SUMS；确认后以 root 运行 --apply。\n\n升级前请阅读 deploy/FORK-UPDATES.md。\n' "$GITHUB_SHA" > fork-notes.md
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to overwrite published assets" >&2
+            exit 1
+          fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --latest=false --title "$tag (cpr-custom)" --notes-file fork-notes.md \
+            codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS deploy/update-cpr.sh

@@ -19,6 +19,7 @@ pub(crate) enum UpdateChannel {
     Beta,
     Rc,
     Experimental,
+    Fork,
 }
 
 impl UpdateChannel {
@@ -29,6 +30,7 @@ impl UpdateChannel {
             Self::Beta => "beta",
             Self::Rc => "rc",
             Self::Experimental => "exp",
+            Self::Fork => "fork",
         }
     }
 }
@@ -212,8 +214,9 @@ pub(crate) fn detail_from_release(
         release_url: release.html_url.clone(),
         notes: release.body.clone().or_else(|| release.name.clone()),
         cached: false,
-        update_supported: true,
-        unsupported_reason: None,
+        update_supported: version_channel(&config.version) != Some(UpdateChannel::Fork),
+        unsupported_reason: (version_channel(&config.version) == Some(UpdateChannel::Fork))
+            .then(|| super::FORK_MANUAL_UPDATE_REASON.to_owned()),
         warning: None,
     }
 }
@@ -353,6 +356,7 @@ fn channel_for_version(version: &semver::Version) -> Option<UpdateChannel> {
         "beta" => Some(UpdateChannel::Beta),
         "rc" => Some(UpdateChannel::Rc),
         "exp" => Some(UpdateChannel::Experimental),
+        "fork" => Some(UpdateChannel::Fork),
         _ => None,
     }
 }
@@ -364,7 +368,7 @@ pub(crate) fn version_channel(version: &str) -> Option<UpdateChannel> {
 
 /// 检查更新与执行更新共用同一规则；构建元数据不构成更新。
 fn update_target_allowed(current: &semver::Version, target: &semver::Version) -> bool {
-    use UpdateChannel::{Alpha, Beta, Experimental, Rc, Stable};
+    use UpdateChannel::{Alpha, Beta, Experimental, Fork, Rc, Stable};
 
     if current.major != target.major || !target.cmp_precedence(current).is_gt() {
         return false;
@@ -374,6 +378,10 @@ fn update_target_allowed(current: &semver::Version, target: &semver::Version) ->
     else {
         return false;
     };
+    // 定制通道允许跟随上游的小版本，但绝不切换到官方或其他预发行通道。
+    if current_channel == Fork || target_channel == Fork {
+        return current_channel == Fork && target_channel == Fork;
+    }
     if current_channel == Stable {
         return target_channel == Stable;
     }

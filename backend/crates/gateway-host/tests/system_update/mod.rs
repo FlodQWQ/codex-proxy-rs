@@ -23,6 +23,77 @@ const TARGET_VERSION: &str = "1.9.9";
 const CROSS_MAJOR_VERSION: &str = "2.0.0";
 
 #[tokio::test]
+async fn fork_checks_should_use_only_fork_releases_and_require_manual_installation() {
+    for (target, allowed) in [
+        ("3.12.1-fork.2", true),
+        ("3.13.0-fork.3", true),
+        ("3.12.1-fork.1", false),
+        ("3.11.0-fork.99", false),
+        ("3.12.1", false),
+        ("3.13.0-beta.1", false),
+        ("4.0.0-fork.3", false),
+        ("3.13.0-fork.0", false),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/FlodQWQ/codex-proxy-rs/releases"))
+            .respond_with(release_response(target, vec![]))
+            .mount(&server)
+            .await;
+        let fixture = Fixture::new();
+        let mut config = fixture.config(&format!("{}/repos", server.uri()));
+        config.version = "3.12.1-fork.1".to_owned();
+        config.update_repository = Some("FlodQWQ/codex-proxy-rs".to_owned());
+        let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+        let detail = service.update_detail(true).await.expect("fork check");
+        assert_eq!(detail.has_update, allowed, "{target}");
+        assert!(!detail.update_supported);
+        assert!(
+            detail
+                .unsupported_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("手动"))
+        );
+        assert!(detail.warning.is_none());
+        assert_eq!(
+            service.version().await.expect("version").update_channel,
+            "fork"
+        );
+        assert!(
+            service
+                .perform_update(Some(target.to_owned()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fs::read(fixture.executable()).expect("binary"),
+            b"old-binary"
+        );
+        assert!(!fixture.state().exists());
+    }
+}
+
+#[tokio::test]
+async fn fork_checks_should_reject_an_upstream_repository_override_without_network() {
+    let server = MockServer::start().await;
+    let fixture = Fixture::new();
+    let mut config = fixture.config(&format!("{}/repos", server.uri()));
+    config.version = "3.12.1-fork.1".to_owned();
+    config.update_repository = Some("zyycn/codex-proxy-rs".to_owned());
+    let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+    let detail = service.update_detail(true).await.expect("detail");
+    assert!(!detail.has_update);
+    assert!(!detail.update_supported);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn restart_should_not_shutdown_when_replacement_spawn_fails() {
     let fixture = Fixture::new();
     let mut config = fixture.config("http://127.0.0.1:1/repos");
