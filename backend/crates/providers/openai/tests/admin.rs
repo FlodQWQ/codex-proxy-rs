@@ -1677,7 +1677,7 @@ async fn codex_tickets_gate_and_inject_only_selected_account_model() {
         std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
         let cache = json!({"settings":{"enabled":true,"proxyUrl":"http://127.0.0.1:9","accountIds":[id],"revision":1},
             "records":{format!("{id}/gpt-6-astra"):{"ticket":state,"expires":Utc::now().timestamp()+if valid_ticket {3600} else {-1},
-                "credential_revision":store.account(id).unwrap().revision().get(),"attempts":[]}}});
+                "credential_revision":store.account(id).unwrap().revision().get()+99,"attempts":[]}}});
         std::fs::write(state_path, serde_json::to_vec(&cache).unwrap()).unwrap();
         let bundle = provider_openai::initialize(
             config.config.clone(),

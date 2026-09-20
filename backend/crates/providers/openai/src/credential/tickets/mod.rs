@@ -72,11 +72,12 @@ fn error(kind: ProviderAdminErrorKind) -> ProviderAdminError {
 fn key(account: &str, model: &str) -> String {
     format!("{account}/{model}")
 }
-fn valid(record: &Record, now: i64, revision: u64) -> bool {
+fn valid(record: &Record, now: i64) -> bool {
+    // Credential revisions also advance for refresh metadata/backoff CAS writes;
+    // ticket reuse is governed by the ticket's own lifetime instead.
     record.expires > now
         && record.ticket.len() == 292
         && record.ticket.starts_with("gAAAAA")
-        && record.credential_revision == revision
 }
 
 impl CodexTicketService {
@@ -123,7 +124,7 @@ impl CodexTicketService {
                 .records
                 .get(&key(account.id().as_str(), model))
                 .is_some_and(|record| {
-                    valid(record, Utc::now().timestamp(), account.revision().get())
+                    valid(record, Utc::now().timestamp())
                 })
     }
 
@@ -138,7 +139,7 @@ impl CodexTicketService {
         state
             .records
             .get(&key(account.id().as_str(), model))
-            .filter(|record| valid(record, Utc::now().timestamp(), account.revision().get()))
+            .filter(|record| valid(record, Utc::now().timestamp()))
             .map(|record| record.ticket.clone())
     }
 
@@ -164,7 +165,7 @@ impl CodexTicketService {
             let now = Utc::now().timestamp();
             let models: Vec<Value> = MODELS.iter().map(|model| {
                 let record = state.records.get(&key(id, model)).cloned().unwrap_or_default();
-                let ready = valid(&record, now, account.revision().get());
+                let ready = valid(&record, now);
                 let mut view = telemetry::summary(&record.attempts, now);
                 let fields = view.as_object_mut().expect("ticket summary object");
                 fields.extend(json!({"model":model,"ready":ready,"remainingSeconds":if ready {record.expires-now} else {0},
@@ -359,7 +360,7 @@ impl CodexTicketService {
             .get(&key(id, model))
             .cloned()
             .unwrap_or_default();
-        if valid(&cached, now + 600, account.revision().get()) {
+        if valid(&cached, now + 600) {
             return Ok(());
         }
         let (ticket, status, result, ip) = self.probe(&account, model, &settings.proxy_url).await;

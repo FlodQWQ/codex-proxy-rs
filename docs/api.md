@@ -440,7 +440,8 @@ config 返回 `{ name, plaintextKey }`，仅读取服务端会话绑定的当前
 HTTP 和 WebSocket 出站使用已取得票据覆盖 turn-state，不在业务请求里现场打票。
 
 票据与设置保存在 `host.runtime_data_dir/codex-tickets.json`，需随运行目录备份。
-凭据版本变化时旧票不再使用。总开关默认关闭，正常会话 turn-state 的既有处理不受关闭状态影响。
+票据只按自身有效期判断是否可复用；账号凭据状态或刷新退避的版本更新不会使仍在有效期内的票据失效。
+总开关默认关闭，正常会话 turn-state 的既有处理不受关闭状态影响。
 打票身份独立使用官方 CLI 稳定版本及 `Ubuntu 22.4.0; x86_64` / `xterm-256color`，
 不从 Desktop 画像借用 alpha 版本；CLI 发布服务负责自动更新版本。
 Fork Build 产物另含 `codex-ticket-probe`，须与主程序放在同一目录并授予执行权限。
