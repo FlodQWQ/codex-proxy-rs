@@ -4,7 +4,7 @@ use gateway_host::config::{FileLoggingConfig, HostConfig, ListenConfig, LoggingC
 use gateway_host::system_update::SystemUpdateConfig;
 
 #[test]
-fn system_update_defaults_should_use_host_build_metadata_and_official_repository() {
+fn system_update_defaults_should_use_host_build_metadata_and_fork_repository() {
     let config = SystemUpdateConfig::default();
 
     assert_eq!(
@@ -16,7 +16,7 @@ fn system_update_defaults_should_use_host_build_metadata_and_official_repository
         (
             env!("CPR_VERSION"),
             env!("CPR_BUILD_TYPE"),
-            Some("zyycn/codex-proxy-rs"),
+            Some("FlodQWQ/codex-proxy-rs"),
         )
     );
 }
