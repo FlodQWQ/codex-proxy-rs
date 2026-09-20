@@ -43,7 +43,7 @@ import { accountColumns, derivedAccountStatus } from './constants'
 const selectedIds = ref<Set<string>>(new Set())
 const showCodexTickets = ref(false)
 const { ticketAccounts, ticketsEnabled, ticketStatusError, reloadTicketStatus } = useCodexTicketStatus()
-const { visibleColumns, columnOptions, setColumnVisible, resetColumns } = useTableColumns(accountColumns, 'accounts')
+const { visibleColumns, columnOptions, setColumnVisible, setColumnOrder, resetColumns } = useTableColumns(accountColumns, 'accounts')
 const {
   loading,
   accounts,
@@ -238,6 +238,7 @@ const {
             <BaseTableColumnSettings
               :options="columnOptions"
               @change="setColumnVisible"
+              @reorder="setColumnOrder"
               @reset="resetColumns"
             />
           </template>
