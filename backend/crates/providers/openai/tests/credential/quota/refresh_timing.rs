@@ -161,8 +161,8 @@ async fn allowed_account_with_expired_window_synchronizes_at_reset_grace() {
         Utc::now().timestamp() < short_reset + 120,
         "fixture must precede grace deadline"
     );
-    let requests = server.received_requests().await.expect("requests").len();
     service.synchronize().await.expect("initial periodic check");
+    let requests = server.received_requests().await.expect("requests").len();
     service
         .synchronize()
         .await
@@ -170,7 +170,7 @@ async fn allowed_account_with_expired_window_synchronizes_at_reset_grace() {
     assert_eq!(
         server.received_requests().await.expect("requests").len(),
         requests,
-        "正常账号首次复核也必须等待 reset 宽限期"
+        "全量首次复核后，宽限期之前不能重复查询"
     );
 
     // 当到达 reset + 120s 宽限期后，账号虽然处于 allowed 状态，但包含已到期的非零用量窗口，被调度主动同步。
@@ -221,4 +221,56 @@ async fn allowed_expired_window_refresh_is_throttled_when_observation_is_unchang
     assert_eq!(service.synchronize().await.expect("first check").updated, 1);
     service.synchronize().await.expect("throttled repeat check");
     assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+}
+
+#[tokio::test]
+async fn periodic_refresh_includes_idle_and_disabled_oauth_accounts_and_is_throttled() {
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_idle").await;
+    create_account_with_enabled(&store, "acct_disabled", false).await;
+    store
+        .seed_api_key(
+            "acct_api",
+            "https://example.invalid".to_owned(),
+            provider_openai::credential::ApiKeyTransport::Http,
+        )
+        .await;
+    let server = MockServer::start().await;
+    mount_usage(
+        &server,
+        json!({"rate_limit": {"allowed":true,"primary_window": {
+            "used_percent":0,"limit_window_seconds":18_000,
+            "reset_at":Utc::now().timestamp()+18_000
+        }}}),
+    )
+    .await;
+    let service = quota_service_with_base_url(&store, reqwest::Client::new(), server.uri());
+    for id in ["acct_idle", "acct_disabled"] {
+        service
+            .refresh_account(store.account(id).unwrap().id())
+            .await
+            .unwrap();
+    }
+    server.reset().await;
+    mount_usage(
+        &server,
+        json!({"rate_limit": {"allowed":true,"primary_window": {
+            "used_percent":2,"limit_window_seconds":18_000,
+            "reset_at":Utc::now().timestamp()+18_000
+        }}}),
+    )
+    .await;
+    assert_eq!(service.synchronize().await.unwrap().updated, 2);
+    assert_eq!(service.synchronize().await.unwrap().updated, 0);
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    assert!(!store.account("acct_disabled").unwrap().enabled());
+    assert!(!store.has_quota("acct_api"));
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(29 * 60)).await;
+    assert_eq!(service.synchronize().await.unwrap().updated, 0);
+    tokio::time::advance(Duration::from_secs(61)).await;
+    // 恢复真实时钟再执行 HTTP，避免模拟时钟自动推进网络超时。
+    tokio::time::resume();
+    assert_eq!(service.synchronize().await.unwrap().updated, 2);
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
 }

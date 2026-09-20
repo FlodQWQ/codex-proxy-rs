@@ -70,7 +70,7 @@ const QUOTA_FETCH_5XX_BASE_DELAY: Duration = Duration::from_secs(1);
 
 /// OpenAI Provider 主动额度刷新的调度策略。
 ///
-/// 正常账号依赖请求响应的被动额度同步；周期 worker 仅复核已耗尽账号。
+/// 所有可查询 OAuth 账号每 30 分钟主动复核，并保留请求响应的被动额度同步。
 /// 该策略保留模型目录的周期刷新频率；额度到期检查使用独立的短周期，
 /// 避免到达 reset 后还要等待完整的目录刷新周期。
 #[derive(Debug, Clone, Copy)]
@@ -218,7 +218,7 @@ struct CodexQuotaProjectionState {
 }
 
 struct CodexQuotaRefreshAttempt {
-    monotonic_at: Instant,
+    monotonic_at: tokio::time::Instant,
     wall_at: SystemTime,
 }
 
@@ -228,6 +228,7 @@ struct CodexQuotaSchedulingEntry {
     revision: CredentialRevision,
     expires_at: Instant,
     signals: Option<AccountQuotaSignals>,
+    plus_bootstrap_until: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -307,6 +308,7 @@ impl CodexQuotaSchedulingProjection {
             snapshot.credential_revision(),
             remaining_ttl,
             scheduling_signals_from_snapshot(snapshot),
+            snapshot::plus_bootstrap_ttl(snapshot),
         );
         true
     }
@@ -329,6 +331,7 @@ impl CodexQuotaSchedulingProjection {
             target.account.id().clone(),
             target.account.revision(),
             ttl,
+            None,
             None,
         );
     }
@@ -359,6 +362,7 @@ impl CodexQuotaSchedulingProjection {
             snapshot.credential_revision(),
             remaining_ttl,
             scheduling_signals_from_snapshot(snapshot),
+            snapshot::plus_bootstrap_ttl(snapshot),
         );
         true
     }
@@ -369,12 +373,20 @@ impl CodexQuotaSchedulingProjection {
         revision: CredentialRevision,
         ttl: Duration,
         signals: Option<AccountQuotaSignals>,
+        plus_bootstrap_ttl: Option<Duration>,
     ) {
         let mut state = self
             .state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        insert_projection_entry(&mut state, account_id, revision, ttl, signals);
+        insert_projection_entry(
+            &mut state,
+            account_id,
+            revision,
+            ttl,
+            signals,
+            plus_bootstrap_ttl,
+        );
     }
 
     fn signals(&self, account: &ProviderAccount) -> Option<AccountQuotaSignals> {
@@ -408,7 +420,7 @@ impl CodexQuotaSchedulingProjection {
             .iter()
             .map(|(account, _)| account.id().clone())
             .collect::<BTreeSet<_>>();
-        let refreshed_at = Instant::now();
+        let refreshed_at = tokio::time::Instant::now();
         let mut state = self
             .state
             .write()
@@ -419,7 +431,7 @@ impl CodexQuotaSchedulingProjection {
 
         // 已耗尽账号首次立即复核，之后每 30 分钟复核，以发现官方提前重置。
         // reset + 2 分钟额外触发一次复核，给上游重置留出传播时间。
-        // 正常账号仅在非零用量窗口经过宽限期后参与，未更新时复用周期节流。
+        // 正常及停用账号也周期查询额度，不改变其启用状态或调度资格。
         let mut reserved = Vec::new();
         for (account, target_reset) in candidates {
             if !periodic_quota_refresh_due(&state, account.id(), target_reset, now, refreshed_at) {
@@ -450,11 +462,9 @@ fn quota_refresh_candidate(
         let reset_at = account.quota().reset_at();
         return Some((account, reset_at));
     }
-    // 正常账号首次进入周期候选也要等待宽限期，不能由“无刷新历史”绕过。
-    let snapshot = snapshot?;
     let expired_window_reset = snapshot
-        .windows()
-        .iter()
+        .into_iter()
+        .flat_map(CodexAccountQuotaSnapshot::windows)
         .filter(|window| {
             window.used_percent().is_some_and(|used| used > 0.0) || window.limit_reached()
         })
@@ -466,7 +476,7 @@ fn quota_refresh_candidate(
                 .is_some_and(|due_at| due_at <= now)
         })
         .min();
-    expired_window_reset.map(|reset_at| (account, Some(reset_at)))
+    Some((account, expired_window_reset))
 }
 
 fn periodic_quota_refresh_due(
@@ -474,7 +484,7 @@ fn periodic_quota_refresh_due(
     account_id: &ProviderAccountId,
     reset_at: Option<SystemTime>,
     now: SystemTime,
-    monotonic_now: Instant,
+    monotonic_now: tokio::time::Instant,
 ) -> bool {
     state
         .last_periodic_refresh_at
@@ -495,6 +505,7 @@ fn insert_projection_entry(
     revision: CredentialRevision,
     ttl: Duration,
     signals: Option<AccountQuotaSignals>,
+    plus_bootstrap_ttl: Option<Duration>,
 ) {
     state.next_version = state.next_version.saturating_add(1);
     state.entries.insert(
@@ -504,6 +515,7 @@ fn insert_projection_entry(
             revision,
             expires_at: Instant::now() + ttl,
             signals,
+            plus_bootstrap_until: plus_bootstrap_ttl.map(|ttl| Instant::now() + ttl),
         },
     );
 }
@@ -794,14 +806,37 @@ impl CodexCredentialQuotaService {
         self.scheduling.signals(account)
     }
 
+    pub(crate) fn prefers_plus_bootstrap(&self, account: &ProviderAccount) -> bool {
+        if account.authentication_kind() != super::CODEX_AUTHENTICATION_KIND_OAUTH
+            || !account
+                .plan_type()
+                .is_some_and(|plan| plan.eq_ignore_ascii_case("plus"))
+        {
+            return false;
+        }
+        let state = self
+            .scheduling
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        state.entries.get(account.id()).is_some_and(|entry| {
+            entry.revision == account.revision()
+                && now < entry.expires_at
+                && entry.plus_bootstrap_until.is_some_and(|until| now < until)
+        })
+    }
+
     pub(crate) fn invalidate_scheduling(&self, account_ids: &[ProviderAccountId]) {
         self.scheduling.invalidate(account_ids);
     }
 
     pub async fn synchronize(&self) -> Result<CodexQuotaSyncSummary, CodexCredentialQuotaError> {
-        let mut accounts = self.repository.list_for_provider().await?;
+        let mut accounts = self.store.list_accounts().await?;
         accounts.retain(|account| {
-            account.authentication_kind() == crate::credential::CODEX_AUTHENTICATION_KIND_OAUTH
+            account.provider().as_str() == "openai"
+                && account.authentication_kind()
+                    == crate::credential::CODEX_AUTHENTICATION_KIND_OAUTH
         });
         let mut summary = CodexQuotaSyncSummary::default();
         let now = SystemTime::now();
@@ -1543,7 +1578,7 @@ fn observed_account_plan(current: Option<&str>, observed: Option<&str>) -> Optio
 }
 
 fn eligible_periodic_quota_refresh(account: &ProviderAccount, now: SystemTime) -> bool {
-    account.enabled() && access_token_is_current(account, now)
+    account.credential_state() == CredentialState::Ready && access_token_is_current(account, now)
 }
 
 fn eligible_initial_quota_sync(account: &ProviderAccount, now: SystemTime) -> bool {

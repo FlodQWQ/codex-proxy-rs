@@ -75,9 +75,7 @@ fn key(account: &str, model: &str) -> String {
 fn valid(record: &Record, now: i64) -> bool {
     // Credential revisions also advance for refresh metadata/backoff CAS writes;
     // ticket reuse is governed by the ticket's own lifetime instead.
-    record.expires > now
-        && record.ticket.len() == 292
-        && record.ticket.starts_with("gAAAAA")
+    record.expires > now && record.ticket.len() == 292 && record.ticket.starts_with("gAAAAA")
 }
 
 impl CodexTicketService {
@@ -105,13 +103,24 @@ impl CodexTicketService {
     }
 
     fn selected(settings: &Settings, account: &ProviderAccount, model: &str) -> bool {
+        MODELS.contains(&model) && Self::selected_account(settings, account)
+    }
+
+    fn selected_account(settings: &Settings, account: &ProviderAccount) -> bool {
         settings.enabled
             && account.authentication_kind() == "oauth"
-            && MODELS.contains(&model)
             && settings
                 .account_ids
                 .iter()
                 .any(|id| id == account.id().as_str())
+    }
+
+    pub(crate) fn prioritizes(&self, account: &ProviderAccount) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::selected_account(&state.settings, account)
     }
 
     pub(crate) fn blocks(&self, account: &ProviderAccount, model: &str) -> bool {
@@ -123,9 +132,7 @@ impl CodexTicketService {
             && !state
                 .records
                 .get(&key(account.id().as_str(), model))
-                .is_some_and(|record| {
-                    valid(record, Utc::now().timestamp())
-                })
+                .is_some_and(|record| valid(record, Utc::now().timestamp()))
     }
 
     pub(crate) fn ticket(&self, account: &ProviderAccount, model: &str) -> Option<String> {

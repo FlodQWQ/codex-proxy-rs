@@ -352,6 +352,8 @@ Client Key 与账号分组形成授权范围：
 - 分组可以包含多个 Provider，账号也可以属于多个分组。
 
 账号选择综合启停状态、credential/quota 事实、Redis cooldown、并发上限、权重、请求间隔和会话亲和。
+OpenAI 在 Provider 选号层按 Plus 低用量、已开启打票、普通账号分层，各层复用 Core 资格检查与默认选择器；
+额度投影仍由 quota owner 解析，不增加持久化的优先级状态，也不覆盖原生续写的固定账号约束。
 `account::AccountModelAccess` 拥有管理员模型政策的校验与精确匹配语义，存入账号行的 `model_access_json`，
 由 `RuntimeAccountDirectory` / `FrozenAccountScope` 随配置快照冻结。Provider 在额度、亲和与租约之前
 按映射后的上游模型筛选账号；重试和 fallback 使用同一冻结政策。上游目录和凭据不承载或改写该政策。
@@ -494,8 +496,8 @@ credential 与 quota 是两组独立事实：credential refresh 不等于 quota 
 - 账号导入和 OAuth complete（包括重新授权）在 credential 提交、Provider 事实失效及快照发布后，
   由 Admin 共用流程后台读取一次额度；不等待观测完成才返回管理请求，失败记录告警但不回滚账号事务。
   手工和后台 credential refresh 仍不隐式刷新 quota。
-- quota refresh、正常推理返回的 rate-limit headers 和后台健康任务汇入同一额度事实；套餐只用于展示与
-  目录 cache 隔离，不创建套餐专属状态机。
+- quota refresh、正常推理返回的 rate-limit headers 和后台健康任务汇入同一额度事实；套餐用于展示、
+  目录 cache 隔离和 Provider 选号偏好，不创建套餐专属额度状态机。
   OpenAI Provider 将其中明确的套餐变更与额度原子提交，共用凭据版本和观察时间保护；
   空值及 `unknown` 不覆盖套餐，同族泛化值保留具体子类型。Token 刷新保留提交时的账号资料。
 

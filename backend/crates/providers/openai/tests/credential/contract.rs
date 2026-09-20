@@ -440,6 +440,76 @@ fn selector_round_robin_cursor_advances_across_requests() {
 }
 
 #[tokio::test]
+async fn plus_bootstrap_priority_uses_only_valid_five_hour_usage_below_one_percent() {
+    for (plan, used, seconds, reset_delta, expected) in [
+        ("plus", Some(0.0), 18_000, 600, "acct_primary"),
+        ("plus", Some(0.5), 18_000, 600, "acct_primary"),
+        ("plus", Some(1.0), 18_000, 600, "acct_fallback"),
+        ("plus", Some(20.0), 18_000, 600, "acct_fallback"),
+        ("pro", Some(0.0), 18_000, 600, "acct_fallback"),
+        ("plus", None, 18_000, 600, "acct_fallback"),
+        ("plus", Some(0.0), 604_800, 600, "acct_fallback"),
+        ("plus", Some(0.0), 18_000, -60, "acct_fallback"),
+    ] {
+        let store = Arc::new(MemoryAccountStore::default());
+        create_account(&store, "acct_primary", "at-primary");
+        create_account(&store, "acct_fallback", "at-fallback");
+        store.set_scheduling("acct_fallback", None, AccountWeight::new(100).unwrap());
+        let account = store.account("acct_primary").unwrap();
+        let now = SystemTime::now();
+        store.compare_and_swap_quota(QuotaObservation {
+            plan_type: Some(plan.to_owned()),
+            account_id: account.id().clone(),
+            expected_revision: account.revision(),
+            quota: OpaqueProviderData::new(json!({"rate_limit": {
+                "primary_window": {"used_percent":used,
+                    "limit_window_seconds":seconds,"reset_at":chrono::Utc::now().timestamp()+reset_delta}
+            }}).as_object().unwrap().clone()),
+            observed_at: now,
+            state: QuotaState::allowed(now),
+        }).await.unwrap();
+        let selector = selector(&store, Arc::new(TestLeaseCoordinator::default()));
+        let request_url = Url::parse("https://chatgpt.com/backend-api/codex/responses").unwrap();
+        let context = attempt(BTreeSet::new());
+        let lease = selector
+            .select(&SelectCodexCredential {
+                upstream_model: "gpt-5.4",
+                request_url: &request_url,
+                attempt: &context,
+                session_affinity_key: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            lease.account_id().as_str(),
+            expected,
+            "{plan} {used:?} {seconds} {reset_delta}"
+        );
+        drop(lease);
+
+        // 显式固定和重试排除仍然优先于 Plus 预热规则。
+        for context in [
+            attempt_with_required(
+                BTreeSet::new(),
+                Some(ProviderAccountId::new("acct_fallback").unwrap()),
+            ),
+            attempt(BTreeSet::from([account.id().clone()])),
+        ] {
+            let lease = selector
+                .select(&SelectCodexCredential {
+                    upstream_model: "gpt-5.4",
+                    request_url: &request_url,
+                    attempt: &context,
+                    session_affinity_key: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(lease.account_id().as_str(), "acct_fallback");
+        }
+    }
+}
+
+#[tokio::test]
 async fn selector_should_claim_the_initial_session_account_before_upstream_send() {
     let store = Arc::new(MemoryAccountStore::default());
     create_account(&store, "acct_first", "at-first");

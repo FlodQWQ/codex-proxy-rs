@@ -1444,10 +1444,17 @@ fn initialized_model_request(
     account_id: &str,
     model: &str,
 ) -> ProviderRequest {
+    initialized_model_request_with_scope(operation, initialized_account_scope(account_id), model)
+}
+
+fn initialized_model_request_with_scope(
+    operation: Operation,
+    account_scope: Arc<FrozenAccountScope>,
+    model: &str,
+) -> ProviderRequest {
     let provider = ProviderKind::new("openai").expect("provider");
     let upstream_model = UpstreamModelId::new(model).expect("upstream model");
     let public_model = PublicModelId::new(upstream_model.as_str()).expect("public model");
-    let account_scope = initialized_account_scope(account_id);
     let snapshot = RuntimeSnapshot::new(
         ConfigRevision::new(1).expect("revision"),
         account_policy(),
@@ -1568,6 +1575,164 @@ fn account_record(account: &ProviderAccount) -> AccountRecord {
 struct TestOpenAiConfig {
     config: OpenAiConfig,
     _runtime: TempDir,
+}
+
+#[tokio::test]
+async fn scheduling_prefers_idle_plus_then_ticket_accounts_then_default_weights() {
+    for ticket_plan in ["free", "plus", "pro", "team"] {
+        let store = Arc::new(MemoryAccountStore::default());
+        for (id, plan, weight, used) in [
+            ("acct_warm", "plus", 1, 0),
+            ("acct_ticket", ticket_plan, 10, 20),
+            ("acct_default", "pro", 100, 20),
+        ] {
+            let mut identity = profile(id);
+            identity.plan_type = Some(plan.to_owned());
+            store
+                .seed_oauth_credential(ImportCodexOAuthCredential {
+                    account_id: id.to_owned(),
+                    name: id.to_owned(),
+                    secret: secret(id),
+                    verified_account: identity,
+                    next_refresh_at: None,
+                    enabled: true,
+                })
+                .await;
+            store.set_scheduling(
+                id,
+                None,
+                gateway_core::account::AccountWeight::new(weight).unwrap(),
+            );
+            let account = store.account(id).unwrap();
+            store.compare_and_swap_quota(QuotaObservation {
+                plan_type: None, account_id: account.id().clone(), expected_revision: account.revision(),
+                observed_at: SystemTime::now(), state: QuotaState::allowed(SystemTime::now()),
+                quota: OpaqueProviderData::new(json!({"rate_limit":{"primary_window":{
+                    "used_percent":used,"limit_window_seconds":18_000,"reset_at":Utc::now().timestamp()+18_000
+                }}}).as_object().unwrap().clone()),
+            }).await.unwrap();
+        }
+        let server = MockServer::start().await;
+        let mut config = valid_config();
+        config.config.api.base_url = server.uri();
+        let state_path = config._runtime.path().join("deploy/codex-tickets.json");
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        std::fs::write(&state_path, serde_json::to_vec(&json!({
+            "settings":{"enabled":true,"proxyUrl":"http://127.0.0.1:9","accountIds":["acct_ticket"],"revision":1},
+            "records":{"acct_ticket/gpt-6-astra":{"ticket":format!("gAAAAA{}", "B".repeat(286)),
+                "expires":Utc::now().timestamp()+3600,"credential_revision":1,"attempts":[]}}
+        })).unwrap()).unwrap();
+        let bundle = provider_openai::initialize(
+            config.config.clone(),
+            provider_ports_with(store.clone(), Arc::new(TestOAuthPending::default())),
+        )
+        .await
+        .unwrap();
+        let scope = Arc::new(FrozenAccountScope::new(
+            Arc::new(RuntimeAccountDirectory::new(
+                ["acct_warm", "acct_ticket", "acct_default"]
+                    .into_iter()
+                    .map(|id| {
+                        (
+                            ProviderAccountId::new(id).unwrap(),
+                            RuntimeAccount::new(
+                                ProviderKind::new("openai").unwrap(),
+                                BTreeSet::new(),
+                            ),
+                        )
+                    })
+                    .collect(),
+            )),
+            ClientRoutingScope::all_accounts(),
+        ));
+        for (step, expected) in ["acct_warm", "acct_ticket", "acct_default"]
+            .into_iter()
+            .enumerate()
+        {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/codex/responses"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(COMPLETED_SESSION_SSE),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let payload = ProtocolPayload::json_object(
+                "openai",
+                json!({"model":"gpt-6-astra","input":"test",
+                    "session_id": if step == 2 { "new-default-session" } else { "shared-priority-session" }})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap()
+            .with_context(Map::from_iter([("use_websocket".to_owned(), json!(false))]));
+            let operation = Operation::Generate(GenerateRequest::from_protocol_payload(payload));
+            let attempt = AttemptContext::new(
+                RequestAttemptContext::new(
+                    ModelRequestId::new(format!("req_priority_{step}")).unwrap(),
+                    ClientApiKeyId::new("key_priority").unwrap(),
+                ),
+                NonZeroU32::new(1).unwrap(),
+                SystemTime::now() + Duration::from_secs(30),
+                account_policy(),
+                AccountAttemptContext::new(BTreeSet::new(), None, None)
+                    .with_account_scope(scope.clone()),
+                None,
+                CancellationToken::new(),
+            );
+            let mut stream = bundle
+                .core_provider()
+                .execute(
+                    initialized_model_request_with_scope(operation, scope.clone(), "gpt-6-astra"),
+                    attempt,
+                )
+                .await
+                .unwrap();
+            while let Some(event) = stream.next().await {
+                event.unwrap();
+            }
+            server.verify().await;
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(
+                requests[0]
+                    .headers
+                    .get("authorization")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                format!("Bearer {expected}"),
+                "ticket_plan={ticket_plan}, step={step}"
+            );
+            if step == 0 {
+                // 用真实额度刷新链路更新共享投影，下一请求应立即退出 Plus 优先级。
+                Mock::given(method("GET")).and(path("/api/codex/usage"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"rate_limit":{"primary_window":{
+                        "used_percent":1,"limit_window_seconds":18_000,"reset_at":Utc::now().timestamp()+18_000
+                    }}}))).mount(&server).await;
+                bundle
+                    .admin_provider()
+                    .quota(ProviderQuotaRequest {
+                        account_id: store.account("acct_warm").unwrap().id().clone(),
+                        refresh: true,
+                        rolling_usage: None,
+                    })
+                    .await
+                    .unwrap();
+            } else if step == 1 {
+                bundle
+                    .admin_provider()
+                    .update_codex_tickets(
+                        json!({"enabled":false,"proxyUrl":"","accountIds":["acct_ticket"],"revision":1}),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -1836,10 +2001,7 @@ async fn codex_tickets_429_pauses_all_models_across_cycles_and_restart_until_exp
             }
         }
         let view = admin.codex_tickets().await.unwrap();
-        assert!(
-            view["accounts"][0]["rateLimitedUntil"].as_i64().unwrap()
-                > Utc::now().timestamp()
-        );
+        assert!(view["accounts"][0]["rateLimitedUntil"].as_i64().unwrap() > Utc::now().timestamp());
         let posts = server
             .received_requests()
             .await

@@ -284,6 +284,21 @@ pub(crate) fn scheduling_signals_from_snapshot(
     quota_scheduling_signals(snapshot)
 }
 
+/// 只使用有效的账号级 5h 窗口；未知额度、周窗口和具名模型桶不能触发 Plus 优先。
+pub(super) fn plus_bootstrap_ttl(snapshot: &CodexAccountQuotaSnapshot) -> Option<Duration> {
+    let now = SystemTime::now();
+    snapshot.windows().iter().find_map(|window| {
+        (window.is_account_wide()
+            && window.window_seconds() == Some(18_000)
+            && !window.limit_reached()
+            && window
+                .used_percent()
+                .is_some_and(|used| (0.0..1.0).contains(&used)))
+        .then(|| quota_window_ttl(window, snapshot.observed_at(), now))
+        .flatten()
+    })
+}
+
 pub(crate) fn quota_scheduling_signals(
     snapshot: &CodexAccountQuotaSnapshot,
 ) -> Option<AccountQuotaSignals> {

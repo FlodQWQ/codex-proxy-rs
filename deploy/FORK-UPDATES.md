@@ -6,7 +6,7 @@
 ## 构建与检查
 
 `Fork Build` 对定制分支构建 Linux amd64 / Debian 12 兼容包，运行前端检查、
-Host 更新器测试、手动脚本校验测试和 Go 探针测试。成功后发布到本 fork 的 GitHub Releases。
+Host 更新器测试、OpenAI Provider 测试（含调度、额度和打票）、手动脚本校验测试和 Go 探针测试。成功后发布到本 fork 的 GitHub Releases。
 版本为 `上游版本-fork.N`，N 使用工作流运行编号。发布仅来自 `cpr-custom`，标为
 Pre-release，不覆盖 GitHub Latest，也不发布或覆盖 Docker 镜像。
 
