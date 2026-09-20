@@ -261,6 +261,12 @@ watch(
         >
           {{ updateError || updateInfo?.warning }}
         </p>
+        <p
+          v-if="updateInfo?.unsupportedReason"
+          class="m-0 text-cp-sm leading-normal text-cp-text-secondary"
+        >
+          {{ updateInfo.unsupportedReason }}
+        </p>
       </section>
 
       <section
