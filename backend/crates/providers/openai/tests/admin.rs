@@ -1653,7 +1653,7 @@ async fn scheduling_prefers_idle_plus_then_ticket_accounts_then_default_weights(
             )),
             ClientRoutingScope::all_accounts(),
         ));
-        for (step, expected) in ["acct_warm", "acct_ticket", "acct_default"]
+        for (step, expected) in ["acct_warm", "acct_warm", "acct_default"]
             .into_iter()
             .enumerate()
         {

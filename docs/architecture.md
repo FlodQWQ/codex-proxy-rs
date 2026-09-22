@@ -353,7 +353,8 @@ Client Key 与账号分组形成授权范围：
 - 分组可以包含多个 Provider，账号也可以属于多个分组。
 
 账号选择综合启停状态、credential/quota 事实、Redis cooldown、并发上限、权重、请求间隔和会话亲和。
-OpenAI 在 Provider 选号层按 Plus 低用量、已开启打票、普通账号分层，各层复用 Core 资格检查与默认选择器；
+OpenAI 在 Provider 选号层先优先已绑定且仍可用的会话账号，再按 Plus 低用量、已开启打票、普通账号分层；
+会话账号因额度、冷却、并发或请求间隔不可用时才回退。各层复用 Core 资格检查与默认选择器；
 额度投影仍由 quota owner 解析，不增加持久化的优先级状态，也不覆盖原生续写的固定账号约束。
 `account::AccountModelAccess` 拥有管理员模型政策的校验与精确匹配语义，存入账号行的 `model_access_json`，
 由 `RuntimeAccountDirectory` / `FrozenAccountScope` 随配置快照冻结。Provider 在额度、亲和与租约之前
@@ -374,7 +375,8 @@ Continuation 仍受原请求的 Client Key、账号范围、Provider 和发送/�
 - xAI 使用客户端提交的完整历史作为重放输入；
 - scope 外账号、跨 Key 复用或不明确发送结果均 fail closed。
 
-会话亲和是优先选择提示，不是硬账号绑定；native continuation 才携带不可跨越的 owner 约束。
+会话亲和是跨普通调度层的最高软优先级，不是硬账号绑定；绑定账号不可用时允许回退，
+native continuation 才携带不可跨越的 owner 约束。
 
 ### 并发等待
 

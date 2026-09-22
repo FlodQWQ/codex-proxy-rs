@@ -571,39 +571,55 @@ impl CodexCredentialSelector {
                             .insert(candidate.account.id().clone());
                     }
                 }
-                // 原生续写和显式固定账号不能换号；普通会话偏好只在同一优先级内生效。
-                // 每级仍由 Core 检查健康、额度、冷却和容量，繁忙时允许降级到下一层。
+                // 原生续写和显式固定账号不能换号；已绑定且可用的会话账号先于所有
+                // Plus、打票和默认优先级。亲和账号暂时不可用时，再按优先级降级切换。
                 let selection = if diagnostic || pinned_account.is_some() {
                     AccountSelector.select(&candidates, &context)
                 } else {
-                    let mut selection = None;
-                    for priority in 0..=2 {
-                        let mut tier_context = context.clone();
-                        for candidate in &candidates {
-                            let tier = if self.quota.prefers_plus_bootstrap(&candidate.account) {
-                                0
-                            } else if self
-                                .tickets
-                                .as_ref()
-                                .is_some_and(|tickets| tickets.prioritizes(&candidate.account))
-                            {
-                                1
-                            } else {
-                                2
-                            };
-                            if tier != priority {
-                                tier_context
-                                    .excluded_accounts
-                                    .insert(candidate.account.id().clone());
+                    let affinity_probe = affinity
+                        .preferred_account()
+                        .is_some()
+                        .then(|| AccountSelector.select(&candidates, &context))
+                        .flatten();
+                    let affinity_hit = affinity_probe.filter(|selection| {
+                        affinity.preferred_account().is_some_and(|preferred| {
+                            selection.candidate().account.id() == preferred
+                        })
+                    });
+                    if affinity_hit.is_some() {
+                        affinity_hit
+                    } else {
+                        if let Some(probe) = affinity_probe {
+                            affinity.observe_preferred_selection(probe.preferred());
+                        }
+                        let mut selection = None;
+                        for priority in 0..=2 {
+                            let mut tier_context = context.clone();
+                            for candidate in &candidates {
+                                let tier =
+                                    if self.quota.prefers_plus_bootstrap(&candidate.account) {
+                                        0
+                                    } else if self.tickets.as_ref().is_some_and(|tickets| {
+                                        tickets.prioritizes(&candidate.account)
+                                    }) {
+                                        1
+                                    } else {
+                                        2
+                                    };
+                                if tier != priority {
+                                    tier_context
+                                        .excluded_accounts
+                                        .insert(candidate.account.id().clone());
+                                }
+                            }
+                            selection = AccountSelector.select(&candidates, &tier_context);
+                            if selection.is_some() {
+                                context = tier_context;
+                                break;
                             }
                         }
-                        selection = AccountSelector.select(&candidates, &tier_context);
-                        if selection.is_some() {
-                            context = tier_context;
-                            break;
-                        }
+                        selection
                     }
-                    selection
                 };
                 request.attempt.trace().account_selection(
                     &candidates,
