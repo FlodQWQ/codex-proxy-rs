@@ -230,6 +230,8 @@ pub struct AccountSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateAccount {
     pub account_id: String,
+    /// 缺省保留显示名称；提供时替换。
+    pub name: Option<String>,
     /// 缺省保留备注；空字符串清空备注。
     pub notes: Option<String>,
     pub enabled: bool,

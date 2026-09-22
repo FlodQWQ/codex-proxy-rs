@@ -14,6 +14,16 @@ fn validate_account_notes(notes: Option<&str>) -> Result<(), WireValidationError
     Ok(())
 }
 
+fn validate_account_name(name: Option<&str>) -> Result<(), WireValidationError> {
+    if name.is_some_and(|name| {
+        let name = name.trim();
+        name.is_empty() || name.chars().count() > 200 || name.chars().any(char::is_control)
+    }) {
+        return Err(WireValidationError::new("name"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AccountProvider {
     OpenAi,
@@ -217,6 +227,8 @@ pub struct UpdateAccountRequest {
     pub outbound_proxy_id: Option<String>,
     pub outbound_proxy_url: Option<super::wire::AccountProxyUpdate>,
     pub account_id: String,
+    /// 缺省保留显示名称；提供时去除首尾空白后替换。
+    pub name: Option<String>,
     pub notes: Option<String>,
     pub enabled: bool,
     #[serde(deserialize_with = "deserialize_required_nullable")]
@@ -229,6 +241,7 @@ pub struct UpdateAccountRequest {
 impl UpdateAccountRequest {
     pub fn validate(&self) -> Result<(), WireValidationError> {
         require_account_id(&self.account_id, "accountId")?;
+        validate_account_name(self.name.as_deref())?;
         validate_account_notes(self.notes.as_deref())?;
         parse_concurrency_limit(self.concurrency_limit)?;
         parse_account_weight(self.weight)?;
@@ -244,6 +257,7 @@ impl UpdateAccountRequest {
                 self.outbound_proxy_url,
             )?,
             account_id: self.account_id,
+            name: self.name.map(|name| name.trim().to_owned()),
             notes: self.notes,
             enabled: self.enabled,
             concurrency_limit: parse_concurrency_limit(self.concurrency_limit)?,

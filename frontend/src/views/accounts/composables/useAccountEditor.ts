@@ -19,6 +19,7 @@ export function useAccountEditor(options: {
 }) {
   const showEditModal = shallowRef(false)
   const editingAccountId = shallowRef<string | null>(null)
+  const name = shallowRef('')
   const notes = shallowRef('')
   const schedulingEnabled = shallowRef(true)
   const concurrencyLimit = shallowRef('')
@@ -65,6 +66,7 @@ export function useAccountEditor(options: {
   function open(account: AccountRow) {
     configurationRequest.invalidate()
     editingAccountId.value = account.id
+    name.value = account.name
     notes.value = account.notes ?? ''
     proxyMode.value = 'preserve'
     proxyId.value = ''
@@ -85,6 +87,11 @@ export function useAccountEditor(options: {
     const accountId = editingAccountId.value
     if (!accountId || saving.value)
       return
+    const displayName = name.value.trim()
+    if (!displayName || [...displayName].length > 200 || /\p{Cc}/u.test(displayName)) {
+      toast.warning('显示名称需为 1–200 个字符，不能包含控制字符')
+      return
+    }
     const isApiKey = editingAccount.value?.authenticationKind === 'api_key'
     if (isApiKey) {
       if (!configurationReady.value)
@@ -113,6 +120,7 @@ export function useAccountEditor(options: {
     await saveAction.run(async () => {
       const settings = {
         accountId,
+        name: displayName,
         notes: notes.value,
         outboundProxyId: proxyMode.value === 'preserve' ? undefined : proxyMode.value === 'direct' ? '' : proxyId.value.trim(),
         enabled: schedulingEnabled.value,
@@ -146,6 +154,7 @@ export function useAccountEditor(options: {
     savedConfiguration.value = undefined
     configurationReady.value = false
     editingAccountId.value = null
+    name.value = ''
     notes.value = ''
     proxyMode.value = 'preserve'
     proxyId.value = ''
@@ -162,6 +171,7 @@ export function useAccountEditor(options: {
     configurationReady,
     showEditModal,
     editingAccount,
+    name,
     notes,
     schedulingEnabled,
     concurrencyLimit,

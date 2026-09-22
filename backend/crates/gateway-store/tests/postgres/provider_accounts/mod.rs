@@ -1176,6 +1176,7 @@ async fn terminal_admin_mutations_keep_revision_account_and_audit_atomic() {
     let result = store
         .update_account(
             UpdateAccount {
+                name: None,
                 notes: None,
                 model_access: Default::default(),
                 outbound_proxy: None,
@@ -1257,6 +1258,7 @@ async fn account_proxy_edits_preserve_credentials_and_clear_egress_without_audit
         request_id: "proxy-edit".to_owned(),
     };
     let command = UpdateAccount {
+        name: None,
         notes: None,
         model_access: Default::default(),
         account_id: "acct_proxy".to_owned(),
@@ -1330,6 +1332,7 @@ async fn account_notes_round_trip_and_survive_import_and_scheduling_updates() {
     };
     let command = UpdateAccount {
         account_id: "acct_notes".to_owned(),
+        name: None,
         notes: Some("  团队备用\n下月续费  ".to_owned()),
         enabled: true,
         concurrency_limit: None,
@@ -1456,6 +1459,114 @@ async fn account_notes_round_trip_and_survive_import_and_scheduling_updates() {
 }
 
 #[tokio::test]
+async fn account_display_name_is_trimmed_preserved_and_does_not_mutate_credentials() {
+    let Some(database) = TestDatabase::create("account_display_name").await else {
+        return;
+    };
+    let repository = PgProviderAccountRepository::new(database.pool.clone());
+    repository
+        .insert_provider_account(account("acct_display_name", "upstream-name"))
+        .await
+        .unwrap();
+    let before: serde_json::Value =
+        sqlx::query_scalar("select to_jsonb(account) from provider_accounts account where id = $1")
+            .bind("acct_display_name")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    let store = admin_account_store(&database.pool);
+    let context = MutationContext {
+        actor: MutationActor::System,
+        request_id: "display-name-edit".to_owned(),
+    };
+    let command = UpdateAccount {
+        account_id: "acct_display_name".to_owned(),
+        name: Some("  团队备用  ".to_owned()),
+        notes: None,
+        enabled: true,
+        concurrency_limit: None,
+        weight: gateway_core::account::AccountWeight::DEFAULT,
+        group_ids: vec![],
+        outbound_proxy: None,
+        model_access: None,
+    };
+    store.update_account(command.clone(), &context).await.unwrap();
+    let after: serde_json::Value =
+        sqlx::query_scalar("select to_jsonb(account) from provider_accounts account where id = $1")
+            .bind("acct_display_name")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(after["name"], "团队备用");
+    for field in [
+        "credential_revision",
+        "provider_credentials_json",
+        "credential_state",
+        "provider_quota_json",
+        "quota_access_state",
+        "quota_evidence",
+        "quota_reset_at",
+        "last_error_reason",
+        "last_error_message",
+    ] {
+        assert_eq!(after[field], before[field], "{field} must be preserved");
+    }
+    let changed_fields: Vec<String> =
+        sqlx::query_scalar("select changed_fields from admin_audit_events")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(changed_fields.iter().any(|field| field == "name"));
+
+    let omitted_name = UpdateAccount {
+        name: None,
+        ..command
+    };
+    store
+        .update_account(omitted_name.clone(), &context)
+        .await
+        .unwrap();
+    let name: String = sqlx::query_scalar("select name from provider_accounts where id = $1")
+        .bind("acct_display_name")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "团队备用");
+    let revision = current_revision(&database.pool).await;
+    let audit_count: i64 = sqlx::query_scalar("select count(*) from admin_audit_events")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    for name in [
+        " \t\n ".to_owned(),
+        "名".repeat(201),
+        "invalid\0name".to_owned(),
+    ] {
+        assert!(
+            store
+                .update_account(
+                    UpdateAccount {
+                        name: Some(name),
+                        ..omitted_name.clone()
+                    },
+                    &context,
+                )
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(current_revision(&database.pool).await, revision);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("select count(*) from admin_audit_events")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap(),
+        audit_count
+    );
+    database.close().await;
+}
+
+#[tokio::test]
 async fn invalid_account_notes_roll_back_scheduling_revision_and_audit() {
     let Some(database) = TestDatabase::create("account_notes_rollback").await else {
         return;
@@ -1479,6 +1590,7 @@ async fn invalid_account_notes_roll_back_scheduling_revision_and_audit() {
         .update_account(
             UpdateAccount {
                 account_id: "acct_notes".to_owned(),
+                name: None,
                 notes: Some("备".repeat(501)),
                 enabled: false,
                 concurrency_limit: None,
@@ -2486,6 +2598,7 @@ async fn provider_account_admin_mutations_are_scoped_audited_and_atomic() {
 
     let revision = repository
         .batch_update_provider_accounts_admin(BatchUpdateProviderAccountsAdmin {
+            name: None,
             notes: None,
             model_access: Default::default(),
             outbound_proxy: None,
@@ -2555,6 +2668,7 @@ async fn credential_rotation_and_settings_share_one_transaction() {
     .expect("seed group");
     let settings = UpdateAccount {
         account_id: ACCOUNT_ID.to_owned(),
+        name: Some("  Combined display name  ".to_owned()),
         notes: Some("统一保存".to_owned()),
         enabled: false,
         concurrency_limit: Some(AccountConcurrencyLimit::new(3).unwrap()),
@@ -2593,6 +2707,7 @@ async fn credential_rotation_and_settings_share_one_transaction() {
     assert_eq!(before["concurrency_limit"], 3);
     assert_eq!(before["weight"], 7);
     assert_eq!(before["notes"], "统一保存");
+    assert_eq!(before["name"], "Combined display name");
     assert_eq!(
         account_group_ids(&database.pool, ACCOUNT_ID).await,
         [GROUP_ID]
@@ -3191,6 +3306,7 @@ async fn proxy_edit_preserves_an_inflight_token_refresh() {
     admin_account_store(&database.pool)
         .update_account(
             UpdateAccount {
+                name: None,
                 notes: None,
                 model_access: Default::default(),
                 account_id: id.as_str().to_owned(),

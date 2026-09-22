@@ -5,6 +5,7 @@ import type { AccountGroup, AccountModelAccess } from '@/api'
 
 import BaseButton from '@/components/base/BaseButton.vue'
 import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
+import BaseInput from '@/components/base/BaseInput.vue'
 import BaseModal from '@/components/base/BaseModal/index.vue'
 import BaseTextarea from '@/components/base/BaseTextarea.vue'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
@@ -29,6 +30,7 @@ const emit = defineEmits<{
 const open = defineModel<boolean>({ required: true })
 const apiKey = defineModel<ApiKeyAccountForm>('apiKey', { required: true })
 const notes = defineModel<string>('notes', { required: true })
+const name = defineModel<string>('name', { required: true })
 const enabled = defineModel<boolean>('enabled', { required: true })
 const concurrencyLimit = defineModel<string>('concurrencyLimit', { required: true })
 const modelAccess = defineModel<AccountModelAccess | undefined>('modelAccess', { required: true })
@@ -62,6 +64,14 @@ const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: t
           />
         </div>
       </div>
+
+      <BaseFormItem label="显示名称" description="仅修改本地显示名称，不影响上游账号" required>
+        <BaseInput
+          v-model="name"
+          placeholder="请输入显示名称，最多 200 个字符"
+          :disabled="saving"
+        />
+      </BaseFormItem>
 
       <section v-if="account.authenticationKind === 'api_key'" class="grid gap-4">
         <h3 class="m-0 text-cp font-heavy text-cp-text">

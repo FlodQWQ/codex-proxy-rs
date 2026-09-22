@@ -302,6 +302,9 @@ impl PgAdminAccountStore {
             if settings.notes.is_some() {
                 changed_fields.push("notes".to_owned());
             }
+            if settings.name.is_some() {
+                changed_fields.push("name".to_owned());
+            }
         }
         let rotation = self
             .accounts
@@ -763,10 +766,14 @@ impl AccountStore for PgAdminAccountStore {
         if command.notes.is_some() {
             changed_fields.push("notes".to_owned());
         }
+        if command.name.is_some() {
+            changed_fields.push("name".to_owned());
+        }
         let config_revision = self
             .accounts
             .batch_update_provider_accounts_admin(BatchUpdateProviderAccountsAdmin {
                 account_ids: vec![command.account_id.clone()],
+                name: command.name,
                 notes: command.notes,
                 enabled: Some(command.enabled),
                 concurrency_limit: Some(command.concurrency_limit),
@@ -933,6 +940,7 @@ impl AccountStore for PgAdminAccountStore {
             .accounts
             .batch_update_provider_accounts_admin(BatchUpdateProviderAccountsAdmin {
                 account_ids: command.account_ids,
+                name: None,
                 notes: None,
                 enabled: command.enabled,
                 concurrency_limit: command.concurrency_limit,

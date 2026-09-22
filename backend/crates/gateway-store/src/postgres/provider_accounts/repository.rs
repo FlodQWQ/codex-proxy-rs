@@ -591,6 +591,10 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
                     update_provider_account_notes_in_transaction(&mut transaction, ids, notes)
                         .await?;
                 }
+                if let Some(name) = settings.name.as_deref() {
+                    update_provider_account_name_in_transaction(&mut transaction, ids, name)
+                        .await?;
+                }
             }
             append_admin_audit_event_in_transaction(
                 &mut transaction,
@@ -614,6 +618,12 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
         validate_batch_update_account_ids(&command.account_ids)?;
         if let Some(group_ids) = &command.group_ids {
             validate_batch_update_group_ids(group_ids)?;
+        }
+        if let Some(name) = command.name.as_deref() {
+            if command.account_ids.len() != 1 {
+                return Err(invalid("provider account display name requires one account"));
+            }
+            validate_provider_account_name(name)?;
         }
         let mut transaction = self
             .pool
@@ -645,6 +655,14 @@ impl ProviderAccountAdminRepository for PgProviderAccountRepository {
                     &mut transaction,
                     &command.account_ids,
                     notes,
+                )
+                .await?;
+            }
+            if let Some(name) = command.name.as_deref() {
+                update_provider_account_name_in_transaction(
+                    &mut transaction,
+                    &command.account_ids,
+                    name,
                 )
                 .await?;
             }
@@ -746,6 +764,29 @@ async fn update_provider_account_notes_in_transaction(
         .execute(&mut **transaction)
         .await
         .map_err(|_| postgres_unavailable("update provider account notes"))?;
+    Ok(())
+}
+
+fn validate_provider_account_name(name: &str) -> StoreResult<()> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 200 || name.chars().any(char::is_control) {
+        return Err(invalid("invalid provider account display name"));
+    }
+    Ok(())
+}
+
+async fn update_provider_account_name_in_transaction(
+    transaction: &mut Transaction<'_, Postgres>,
+    account_ids: &[String],
+    name: &str,
+) -> StoreResult<()> {
+    validate_provider_account_name(name)?;
+    sqlx::query("update provider_accounts set name = $2 where id = any($1::text[])")
+        .bind(account_ids)
+        .bind(name.trim())
+        .execute(&mut **transaction)
+        .await
+        .map_err(|_| postgres_unavailable("update provider account display name"))?;
     Ok(())
 }
 

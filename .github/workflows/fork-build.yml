@@ -27,6 +27,20 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
+    services:
+      postgres:
+        image: postgres:18-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818
+        env:
+          POSTGRES_DB: codex_proxy
+          POSTGRES_USER: codex_proxy
+          POSTGRES_PASSWORD: codex_proxy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U codex_proxy -d codex_proxy"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,15 +90,16 @@ jobs:
           version=$(ruby -ryaml -e 'puts YAML.load_file("release/version.yaml").fetch("version").delete_prefix("v")')
           version="${version}-fork.${GITHUB_RUN_NUMBER}"
           echo "FORK_VERSION=$version" >> "$GITHUB_ENV"
-          docker run --rm --user "$(id -u):$(id -g)" \
+          docker run --rm --network host --user "$(id -u):$(id -g)" \
             -e CARGO_HOME=/cargo -e HOME=/tmp \
+            -e CPR_TEST_DATABASE_URL=postgres://codex_proxy:codex_proxy@127.0.0.1:5432/codex_proxy \
             -e CPR_VERSION="$version" \
             -e CPR_GIT_SHA -e CPR_BUILD_TYPE \
             -e CPR_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -v "$HOME/.cargo:/cargo" -v "$PWD:/workspace" \
             -w /workspace/backend \
             rust:1.98-bookworm@sha256:828077e0f5ed0401fbd9cb5b4d5dedca23bd13c7fe032f3e8b7313e7acd2a57f \
-            sh -c 'cargo +1.98.0 build --release --locked --bin codex-proxy-rs && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-host --test main system_update && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p provider-openai --test main'
+            sh -c 'cargo +1.98.0 build --release --locked --bin codex-proxy-rs && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-host --test main system_update && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p provider-openai --test main && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-api --test main admin::accounts && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-admin --test main use_case::accounts && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-store --test main postgres::provider_accounts'
           install -m755 backend/target/release/codex-proxy-rs dist/codex-proxy-rs
           cd backend/crates/providers/openai/ticket-probe
           GOTOOLCHAIN=go1.27.0 CGO_ENABLED=0 go test ./...
@@ -120,6 +135,10 @@ jobs:
         run: |
           tag="v${FORK_VERSION}"
           printf '定制分支：cpr-custom\n提交：%s\n\n支持网页立即更新完整定制包，更新后点击重启服务。旧版本首次仍需手动安装并配置更新目录权限及重启方式。手动更新可下载压缩包、SHA256SUMS 和 update-cpr.sh，先运行 --check，再运行 --apply。\n\n升级前请备份数据库并阅读 deploy/FORK-UPDATES.md。\n' "$GITHUB_SHA" > fork-notes.md
+          if head -n1 release/notes.md | grep -Fxq "# $tag"; then
+            printf '\n' >> fork-notes.md
+            cat release/notes.md >> fork-notes.md
+          fi
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release already exists; refusing to overwrite published assets" >&2
             exit 1

@@ -180,6 +180,7 @@ const {
   showEditModal,
   editingAccount,
   notes: editingNotes,
+  name: editingName,
   schedulingEnabled,
   concurrencyLimit: editingConcurrencyLimit,
   weight: editingWeight,
@@ -465,6 +466,7 @@ const {
       v-model="showEditModal"
       v-model:api-key="editingApiKey"
       v-model:notes="editingNotes"
+      v-model:name="editingName"
       v-model:enabled="schedulingEnabled"
       v-model:concurrency-limit="editingConcurrencyLimit"
       v-model:weight="editingWeight"

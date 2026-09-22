@@ -322,6 +322,8 @@ impl fmt::Debug for RotateProviderAccount {
 pub struct BatchUpdateProviderAccountsAdmin {
     pub outbound_proxy: Option<gateway_admin::model::proxies::AccountProxySelection>,
     pub account_ids: Vec<String>,
+    /// 仅限单账号编辑；公共批量命令不传递此字段。
+    pub name: Option<String>,
     pub notes: Option<String>,
     pub enabled: Option<bool>,
     pub concurrency_limit: Option<Option<AccountConcurrencyLimit>>,

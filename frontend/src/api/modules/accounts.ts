@@ -386,6 +386,7 @@ interface AccountResetCreditConsumeParam extends AccountIdParam {
 }
 
 interface AccountUpdateParam {
+  name?: string
   outboundProxyUrl?: string
   outboundProxyId?: string
   accountId: string

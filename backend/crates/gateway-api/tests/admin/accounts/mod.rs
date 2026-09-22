@@ -427,6 +427,35 @@ fn single_update_should_reject_oversized_notes_and_control_characters() {
     }
 }
 
+#[test]
+fn single_update_should_validate_optional_trimmed_display_names() {
+    use gateway_api::admin::accounts::UpdateAccountRequest;
+    use serde_json::json;
+
+    for name in [json!(null), json!("  团队备用  "), json!("名".repeat(200))] {
+        let request: UpdateAccountRequest = serde_json::from_value(json!({
+            "accountId": "acct_display_name", "enabled": true, "concurrencyLimit": null,
+            "weight": 1, "groupIds": [], "name": name
+        }))
+        .unwrap();
+        request.validate().expect("accept optional display name");
+    }
+
+    for name in [
+        " \t\n ".to_owned(),
+        "名".repeat(201),
+        "display\0name".to_owned(),
+        "display\nname".to_owned(),
+    ] {
+        let request: UpdateAccountRequest = serde_json::from_value(json!({
+            "accountId": "acct_display_name", "enabled": true, "concurrencyLimit": null,
+            "weight": 1, "groupIds": [], "name": name
+        }))
+        .unwrap();
+        assert_eq!(request.validate().unwrap_err().field(), "name");
+    }
+}
+
 mod response {
     use gateway_api::admin::accounts::AccountUsageView;
     use gateway_api::admin::presenter::format_decimal_currency;
