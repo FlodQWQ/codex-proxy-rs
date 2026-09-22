@@ -1609,6 +1609,68 @@ fn response_cookie_rotation_returns_a_current_account_for_later_fenced_writes() 
     );
 }
 
+#[test]
+fn routing_cookie_capture_is_account_isolated_and_revision_fenced() {
+    let store = Arc::new(MemoryAccountStore::default());
+    create_account(&store, "acct_primary", "at-primary");
+    create_account(&store, "acct_other", "at-other");
+    let repository = store.repository();
+    let policy = provider_openai::credential::CodexCookiePolicy::official().unwrap();
+    let origin = Url::parse("https://chatgpt.com/backend-api/codex/responses").unwrap();
+    let stale = store.account("acct_primary").unwrap();
+    block_on(repository.capture_response_cookies(
+        &stale,
+        &policy,
+        &origin,
+        &[
+            "__cflb=route; Path=/; Secure; Max-Age=240".to_owned(),
+            "__oailb=backend; Path=/; Secure; Max-Age=240".to_owned(),
+        ],
+    ))
+    .unwrap();
+    assert!(
+        block_on(repository.capture_response_cookies(
+            &stale,
+            &policy,
+            &origin,
+            &["__cflb=stale; Path=/; Secure".to_owned(),]
+        ))
+        .is_err()
+    );
+    let other = store.account("acct_other").unwrap();
+    assert!(
+        block_on(repository.load_complete_data(&other))
+            .unwrap()
+            .cookies()
+            .is_empty()
+    );
+    let current = store.account("acct_primary").unwrap();
+    let data = block_on(repository.load_complete_data(&current)).unwrap();
+    assert_eq!(data.cookies().len(), 2);
+    assert!(
+        data.cookies()
+            .iter()
+            .all(|cookie| cookie.expires_at.is_some())
+    );
+    block_on(repository.capture_response_cookies(
+        &current,
+        &policy,
+        &origin,
+        &[
+            "__cflb=; Path=/; Secure; Max-Age=0".to_owned(),
+            "__oailb=; Path=/; Secure; Max-Age=0".to_owned(),
+        ],
+    ))
+    .unwrap();
+    let current = store.account("acct_primary").unwrap();
+    assert!(
+        block_on(repository.load_complete_data(&current))
+            .unwrap()
+            .cookies()
+            .is_empty()
+    );
+}
+
 fn queued_attempt(timeout: Duration) -> AttemptContext {
     AttemptContext::new(
         RequestAttemptContext::new(

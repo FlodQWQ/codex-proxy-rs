@@ -705,61 +705,8 @@ pub(super) fn codex_request_context<'a>(
 pub(super) fn build_cookie_header(
     cookies: &[RuntimeCodexCookie],
 ) -> Result<Option<SecretString>, ProviderError> {
-    if cookies.is_empty() {
-        return Ok(None);
-    }
-    let mut header = String::new();
-    for cookie in cookies {
-        let value = cookie.value.expose_secret();
-        if !valid_cookie_name(&cookie.name)
-            || value.is_empty()
-            || value.chars().any(char::is_control)
-            || value.contains(';')
-        {
-            return Err(provider_error(
-                ProviderErrorKind::Protocol,
-                UpstreamSendState::NotSent,
-            ));
-        }
-        if !header.is_empty() {
-            header.push_str("; ");
-        }
-        header.push_str(&cookie.name);
-        header.push('=');
-        header.push_str(value);
-        if header.len() > MAX_COOKIE_HEADER_BYTES {
-            return Err(provider_error(
-                ProviderErrorKind::Protocol,
-                UpstreamSendState::NotSent,
-            ));
-        }
-    }
-    Ok(Some(SecretString::from(header)))
-}
-
-pub(super) fn valid_cookie_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 256
-        && name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-        })
+    crate::credential::build_cookie_header(cookies)
+        .map_err(|_| provider_error(ProviderErrorKind::Protocol, UpstreamSendState::NotSent))
 }
 
 pub(super) fn map_request_error(error: CodexRequestEncodeError) -> ProviderError {

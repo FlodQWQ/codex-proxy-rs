@@ -41,6 +41,7 @@ pub use catalog::{
     CodexCatalogScope, CodexCredentialCatalogError, CodexCredentialCatalogService,
     CodexCredentialCatalogSnapshot, CodexPlanCatalog,
 };
+pub(crate) use cookie::build_header as build_cookie_header;
 pub use cookie::{CodexCookiePolicy, CookiePolicyError};
 pub use oauth::{
     CodexOAuthAdmin, CodexOAuthAdminError, CodexOAuthAdminService, CodexOAuthAuthorizationStarted,

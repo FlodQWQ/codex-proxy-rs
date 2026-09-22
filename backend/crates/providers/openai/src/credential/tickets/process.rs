@@ -28,6 +28,8 @@ pub(super) struct ProbeResult {
     pub status: u16,
     pub ip: String,
     pub result: String,
+    #[serde(default, rename = "setCookieHeaders")]
+    pub set_cookie_headers: Vec<String>,
 }
 
 pub(super) async fn probe(path: &Path, input: Value) -> Result<ProbeResult, &'static str> {
@@ -47,11 +49,12 @@ pub(super) async fn probe(path: &Path, input: Value) -> Result<ProbeResult, &'st
         .stdout
         .take()
         .ok_or("helper_error")?
-        .take(65537)
+        // 64 KiB Cookie 在 JSON 转义后最多膨胀六倍，保留有界协议余量。
+        .take(524289)
         .read_to_end(&mut output)
         .await
         .map_err(|_| "helper_error")?;
-    if output.len() > 65536 || !child.wait().await.map_err(|_| "helper_error")?.success() {
+    if output.len() > 524288 || !child.wait().await.map_err(|_| "helper_error")?.success() {
         return Err("helper_error");
     }
     serde_json::from_slice(&output).map_err(|_| "helper_error")

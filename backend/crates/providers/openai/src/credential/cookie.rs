@@ -2,14 +2,15 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use cookie::Cookie;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
-use super::types::UpsertCodexCookie;
+use super::types::{RuntimeCodexCookie, UpsertCodexCookie};
 
 const MAX_SET_COOKIE_HEADERS: usize = 32;
 const MAX_SET_COOKIE_HEADER_BYTES: usize = 16 * 1024;
 const MAX_SET_COOKIE_TOTAL_BYTES: usize = 64 * 1024;
+const MAX_COOKIE_HEADER_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct CodexCookiePolicy {
@@ -48,6 +49,8 @@ impl CodexCookiePolicy {
                 "oai-did",
                 "cf_clearance",
                 "__cf_bm",
+                "__cflb",
+                "__oailb",
                 "_cfuvid",
             ],
             ["chatgpt.com", "openai.com"],
@@ -202,6 +205,65 @@ impl CodexCookiePolicy {
             .any(|allowed| domain_matches(domain, allowed))
     }
 }
+
+/// 从已通过 Cookie scope 筛选的运行时 Cookie 生成敏感请求头。
+pub(crate) fn build_header(
+    cookies: &[RuntimeCodexCookie],
+) -> Result<Option<SecretString>, CookieHeaderError> {
+    if cookies.is_empty() {
+        return Ok(None);
+    }
+    let mut header = String::new();
+    for cookie in cookies {
+        let value = cookie.value.expose_secret();
+        if !valid_cookie_name(&cookie.name)
+            || value.is_empty()
+            || value.chars().any(char::is_control)
+            || value.contains(';')
+        {
+            return Err(CookieHeaderError);
+        }
+        if !header.is_empty() {
+            header.push_str("; ");
+        }
+        header.push_str(&cookie.name);
+        header.push('=');
+        header.push_str(value);
+        if header.len() > MAX_COOKIE_HEADER_BYTES {
+            return Err(CookieHeaderError);
+        }
+    }
+    Ok(Some(SecretString::from(header)))
+}
+
+pub(crate) fn valid_cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 256
+        && name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("Codex Cookie header is invalid")]
+pub(crate) struct CookieHeaderError;
 
 pub(crate) struct ParsedCookieBatch {
     pub(crate) inputs: Vec<UpsertCodexCookie>,

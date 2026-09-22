@@ -1,5 +1,5 @@
 //! 按账号与模型获取门票；独立打票出口不改变业务代理，持久文件不对外暴露凭据。
-use super::CodexCredentialRepository;
+use super::{CodexCookiePolicy, CodexCredentialRepository};
 use crate::transport::{headers::build_codex_model_headers, profile::CodexWireProfileState};
 use chrono::Utc;
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -10,9 +10,13 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf, sync::Mutex, time::Duration};
+use url::Url;
 
 const MODELS: [&str; 2] = ["gpt-6-astra", "gpt-5.6-sol"];
-const TTL: i64 = 3600;
+// 根据实测反馈保守限制为四分钟，这不是上游承诺的有效期。
+const TICKET_TTL: i64 = 240;
+const ATTEMPT_WINDOW: i64 = 3600;
+const REFRESH_BEFORE: i64 = 60;
 const RATE_LIMIT_COOLDOWN: i64 = 3600;
 mod process;
 mod telemetry;
@@ -42,6 +46,8 @@ struct Attempt {
 #[derive(Default, Clone, Deserialize, Serialize)]
 struct Record {
     ticket: String,
+    #[serde(default)]
+    issued_at: i64,
     expires: i64,
     credential_revision: u64,
     attempts: Vec<Attempt>,
@@ -60,6 +66,7 @@ pub(crate) struct CodexTicketService {
     helper: Option<PathBuf>,
     base_url: String,
     repository: CodexCredentialRepository,
+    cookie_policy: CodexCookiePolicy,
     profile: CodexWireProfileState,
     path: PathBuf,
     state: Mutex<State>,
@@ -75,12 +82,18 @@ fn key(account: &str, model: &str) -> String {
 fn valid(record: &Record, now: i64) -> bool {
     // Credential revisions also advance for refresh metadata/backoff CAS writes;
     // ticket reuse is governed by the ticket's own lifetime instead.
-    record.expires > now && record.ticket.len() == 292 && record.ticket.starts_with("gAAAAA")
+    record.issued_at > 0
+        && record.issued_at <= now
+        && record.expires <= record.issued_at.saturating_add(TICKET_TTL)
+        && record.expires > now
+        && record.ticket.len() == 292
+        && record.ticket.starts_with("gAAAAA")
 }
 
 impl CodexTicketService {
     pub(crate) async fn new(
         repository: CodexCredentialRepository,
+        cookie_policy: CodexCookiePolicy,
         profile: CodexWireProfileState,
         path: PathBuf,
         base_url: String,
@@ -95,6 +108,7 @@ impl CodexTicketService {
             helper: process::executable(),
             base_url,
             repository,
+            cookie_policy,
             profile,
             path,
             state: Mutex::new(state),
@@ -170,9 +184,11 @@ impl CodexTicketService {
                 continue;
             };
             let now = Utc::now().timestamp();
+            let cookies_ready =
+                matches!(self.capture_probe_cookies(&account, &[]).await, Ok(Some(_)));
             let models: Vec<Value> = MODELS.iter().map(|model| {
                 let record = state.records.get(&key(id, model)).cloned().unwrap_or_default();
-                let ready = valid(&record, now);
+                let ready = valid(&record, now) && cookies_ready;
                 let mut view = telemetry::summary(&record.attempts, now);
                 let fields = view.as_object_mut().expect("ticket summary object");
                 fields.extend(json!({"model":model,"ready":ready,"remainingSeconds":if ready {record.expires-now} else {0},
@@ -196,7 +212,7 @@ impl CodexTicketService {
             "transport":if self.helper.is_some() {"go-http1"} else {"native-http1"},
             "harvestIdentity":{"version":self.harvest_profile().codex_version,"userAgent":self.harvest_profile().user_agent()},
             "proxyConfigured":!state.settings.proxy_url.is_empty(),"proxyEndpoint":endpoint,
-            "ttlSeconds":TTL,"refreshBeforeSeconds":600,"intervalSeconds":6,"failClosed":true,"accounts":accounts}),
+            "ttlSeconds":TICKET_TTL,"refreshBeforeSeconds":REFRESH_BEFORE,"intervalSeconds":6,"failClosed":true,"accounts":accounts}),
         )
     }
 
@@ -367,19 +383,15 @@ impl CodexTicketService {
             .get(&key(id, model))
             .cloned()
             .unwrap_or_default();
-        if valid(&cached, now + 600) {
+        if valid(&cached, now + REFRESH_BEFORE)
+            && matches!(self.capture_probe_cookies(&account, &[]).await, Ok(Some(_)))
+        {
             return Ok(());
         }
-        let (ticket, status, result, ip) = self.probe(&account, model, &settings.proxy_url).await;
-        let success = status == 200 && ticket.len() == 292 && ticket.starts_with("gAAAAA");
-        let attempt = Attempt {
-            ip,
-            at: now,
-            status,
-            length: ticket.len(),
-            success,
-            result,
-        };
+        let (ticket, status, result, ip, set_cookie_headers) =
+            self.probe(&account, model, &settings.proxy_url).await;
+        let mut success = result == "success";
+        let mut result = result;
         let Some(fresh) = self
             .repository
             .store()
@@ -392,6 +404,29 @@ impl CodexTicketService {
         if !fresh.enabled() || fresh.revision() != account.revision() {
             return Ok(());
         }
+        // Cookie 先于票据发布；CAS 冲突或存储失败不能留下缺少路由 Cookie 的新票据。
+        // 这里不持有票据全局写锁，且失败仍继续记录 HTTP 429 的账号级冷却。
+        let cookies_ready = self
+            .capture_probe_cookies(&fresh, &set_cookie_headers)
+            .await;
+        let credential_revision = match cookies_ready {
+            Ok(Some(revision)) => revision,
+            Ok(None) | Err(()) => {
+                if success {
+                    success = false;
+                    result = "cookie_error".to_owned();
+                }
+                fresh.revision().get()
+            }
+        };
+        let attempt = Attempt {
+            ip,
+            at: now,
+            status,
+            length: ticket.len(),
+            success,
+            result,
+        };
         let _write = self.writes.lock().await;
         let mut proposed = self
             .state
@@ -408,15 +443,20 @@ impl CodexTicketService {
             );
         }
         let record = proposed.records.entry(key(id, model)).or_default();
-        record.attempts.retain(|a| a.at >= now - TTL);
+        record.attempts.retain(|a| a.at >= now - ATTEMPT_WINDOW);
         if record.attempts.len() >= 1000 {
             record.attempts.remove(0);
         }
+        let cookie_failure = attempt.result == "cookie_error";
         record.attempts.push(attempt);
         if success {
             record.ticket = ticket;
-            record.expires = Utc::now().timestamp() + TTL;
-            record.credential_revision = account.revision().get();
+            record.issued_at = now;
+            record.expires = now + TICKET_TTL;
+            record.credential_revision = credential_revision;
+        } else if cookie_failure {
+            record.ticket.clear();
+            record.expires = 0;
         }
         self.persist(&proposed).await?;
         *self
@@ -424,6 +464,61 @@ impl CodexTicketService {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = proposed;
         Ok(())
+    }
+
+    async fn capture_probe_cookies(
+        &self,
+        account: &ProviderAccount,
+        headers: &[String],
+    ) -> Result<Option<u64>, ()> {
+        let origin = Url::parse(&crate::transport::endpoint_url(
+            &self.base_url,
+            crate::transport::CODEX_RESPONSES_PATH,
+        ))
+        .map_err(|_| ())?;
+        let outcome = self
+            .repository
+            .capture_response_cookies(account, &self.cookie_policy, &origin, headers)
+            .await
+            .map_err(|_| ())?;
+        let current = self
+            .repository
+            .store()
+            .get_account(account.id())
+            .await
+            .map_err(|_| ())?
+            .ok_or(())?;
+        let revision = outcome
+            .credential_revision
+            .unwrap_or(account.revision().get());
+        if !current.enabled() || current.revision().get() != revision {
+            return Err(());
+        }
+        let runtime = self
+            .repository
+            .load_runtime_credential(&current)
+            .await
+            .map_err(|_| ())?;
+        let now = Utc::now();
+        let cookies = runtime
+            .cookies
+            .into_iter()
+            .filter(|cookie| {
+                cookie.expires_at.is_none_or(|expires| expires > now)
+                    && self.cookie_policy.may_replay(
+                        &origin,
+                        &cookie.domain,
+                        &cookie.path,
+                        cookie.host_only,
+                        cookie.secure,
+                    )
+            })
+            .collect::<Vec<_>>();
+        super::build_cookie_header(&cookies).map_err(|_| ())?;
+        let ready = cookies
+            .iter()
+            .any(|cookie| matches!(cookie.name.as_str(), "__cflb" | "__oailb"));
+        Ok(ready.then_some(revision))
     }
 
     fn harvest_profile(&self) -> crate::transport::profile::CodexWireProfile {
@@ -450,7 +545,7 @@ impl CodexTicketService {
         account: &ProviderAccount,
         model: &str,
         proxy: &str,
-    ) -> (String, u16, String, Option<String>) {
+    ) -> (String, u16, String, Option<String>, Vec<String>) {
         let operation = async {
             let runtime = self
                 .repository
@@ -478,6 +573,23 @@ impl CodexTicketService {
                 &self.base_url,
                 crate::transport::CODEX_RESPONSES_PATH,
             );
+            let endpoint_url = Url::parse(&endpoint).map_err(|_| "input_error")?;
+            let now = Utc::now();
+            let cookies = runtime
+                .cookies
+                .into_iter()
+                .filter(|cookie| {
+                    cookie.expires_at.is_none_or(|expires| expires > now)
+                        && self.cookie_policy.may_replay(
+                            &endpoint_url,
+                            &cookie.domain,
+                            &cookie.path,
+                            cookie.host_only,
+                            cookie.secure,
+                        )
+                })
+                .collect::<Vec<_>>();
+            let cookie_header = super::build_cookie_header(&cookies).map_err(|_| "cookie_error")?;
             let body = json!({"model":model,"store":false,"stream":true,"instructions":"Reply with exactly: pong",
                 "input":[{"role":"user","content":[{"type":"input_text","text":"ping"}]}]});
             let session = uuid::Uuid::new_v4().to_string();
@@ -495,12 +607,20 @@ impl CodexTicketService {
                     "responses=experimental".to_owned(),
                 );
                 fields.insert("session_id".to_owned(), session);
+                if let Some(cookie_header) = &cookie_header {
+                    fields.insert(
+                        "Cookie".to_owned(),
+                        cookie_header.expose_secret().to_owned(),
+                    );
+                }
                 let result = process::probe(
                     helper,
                     json!({"endpoint":endpoint,"proxyUrl":proxy,"headers":fields,"body":body}),
                 )
                 .await?;
-                let failure = if result.status == 0 {
+                let failure = if result.result == "cookie_error" {
+                    Some("cookie_error")
+                } else if result.status == 0 {
                     Some(match result.result.as_str() {
                         "proxy_error" => "proxy_error",
                         "input_error" => "input_error",
@@ -514,6 +634,7 @@ impl CodexTicketService {
                     result.status,
                     (!result.ip.is_empty()).then_some(result.ip),
                     failure,
+                    result.set_cookie_headers,
                 ));
             }
             let builder = Client::builder()
@@ -527,17 +648,20 @@ impl CodexTicketService {
             let client = crate::transport::tls::build_reqwest_client_with_custom_ca(builder)
                 .map_err(|_| "proxy_error")?;
             let observed = trace::observe(&client, &endpoint).await;
-            let response = client
+            let request = client
                 .post(&endpoint)
                 .headers(headers)
                 .header("connection", "close")
                 .header("accept", "text/event-stream")
                 .header("openai-beta", "responses=experimental")
                 .header("session_id", session)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|_| "network_error")?;
+                .json(&body);
+            let request = if let Some(cookie_header) = &cookie_header {
+                request.header(reqwest::header::COOKIE, cookie_header.expose_secret())
+            } else {
+                request
+            };
+            let response = request.send().await.map_err(|_| "network_error")?;
             let ip = observed.and_then(|trace| trace.confirm(&response));
             let status = response.status().as_u16();
             let state = response
@@ -547,10 +671,27 @@ impl CodexTicketService {
                 .unwrap_or("")
                 .trim()
                 .to_owned();
-            Ok::<_, &str>((state, status, ip, None))
+            let set_cookie_headers = response
+                .headers()
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+                .filter_map(|value| value.to_str().ok().map(ToOwned::to_owned))
+                .collect();
+            Ok::<_, &str>((state, status, ip, None, set_cookie_headers))
         };
         match tokio::time::timeout(Duration::from_secs(25), operation).await {
-            Ok(Ok((ticket, status, ip, failure))) => {
+            Ok(Ok((ticket, status, ip, failure, set_cookie_headers))) => {
+                if set_cookie_headers.len() > 32
+                    || set_cookie_headers.iter().map(String::len).sum::<usize>() > 64 * 1024
+                {
+                    return (
+                        String::new(),
+                        status,
+                        "cookie_error".to_owned(),
+                        ip,
+                        Vec::new(),
+                    );
+                }
                 let result = failure.unwrap_or(
                     if status == 200 && ticket.len() == 292 && ticket.starts_with("gAAAAA") {
                         "success"
@@ -560,10 +701,10 @@ impl CodexTicketService {
                         "invalid_ticket"
                     },
                 );
-                (ticket, status, result.to_owned(), ip)
+                (ticket, status, result.to_owned(), ip, set_cookie_headers)
             }
-            Ok(Err(reason)) => (String::new(), 0, reason.to_owned(), None),
-            Err(_) => (String::new(), 0, "timeout".to_owned(), None),
+            Ok(Err(reason)) => (String::new(), 0, reason.to_owned(), None, Vec::new()),
+            Err(_) => (String::new(), 0, "timeout".to_owned(), None, Vec::new()),
         }
     }
 }

@@ -27,10 +27,11 @@ type request struct {
 }
 
 type result struct {
-	Ticket string `json:"ticket"`
-	Status int    `json:"status"`
-	IP     string `json:"ip"`
-	Result string `json:"result"`
+	Ticket           string   `json:"ticket"`
+	Status           int      `json:"status"`
+	IP               string   `json:"ip"`
+	Result           string   `json:"result"`
+	SetCookieHeaders []string `json:"setCookieHeaders,omitempty"`
 }
 
 func main() {
@@ -135,7 +136,21 @@ func probe(input request) result {
 	}
 	defer response.Body.Close()
 	output.Status = response.StatusCode
+	output.SetCookieHeaders = response.Header.Values("Set-Cookie")
+	// 与父进程的 Cookie 批次上限一致，保留状态码以便 429 仍进入冷却。
+	cookieBytes := 0
+	for _, value := range output.SetCookieHeaders {
+		cookieBytes += len(value)
+	}
+	if len(output.SetCookieHeaders) > 32 || cookieBytes > 64*1024 {
+		output.SetCookieHeaders = nil
+		output.Result = "cookie_error"
+		return output
+	}
 	output.Ticket = strings.TrimSpace(response.Header.Get("x-codex-turn-state"))
+	if len(output.Ticket) > 1024 {
+		output.Ticket = ""
+	}
 	output.Result = "invalid_ticket"
 	if output.Status != 200 {
 		output.Result = "http_error"

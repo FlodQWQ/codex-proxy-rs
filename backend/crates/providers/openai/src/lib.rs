@@ -77,6 +77,8 @@ pub async fn initialize(
             residency: config.residency,
             ..Default::default()
         });
+    let cookie_policy =
+        CodexCookiePolicy::official().map_err(|_| OpenAiInitializeError::CookiePolicy)?;
     let artifact_cache =
         CodexArtifactProfileCache::new(provider_kind.clone(), ports.artifact_profiles());
     let configured_build = profile.snapshot().desktop_build.parse::<u64>().ok();
@@ -133,6 +135,7 @@ pub async fn initialize(
     let tickets = Arc::new(
         credential::CodexTicketService::new(
             repository.clone(),
+            cookie_policy.clone(),
             profile.clone(),
             config.ticket_state_path(),
             config.base_url().to_owned(),
@@ -174,7 +177,7 @@ pub async fn initialize(
             session_exclusions,
             Arc::clone(&quota),
             Arc::clone(&account_feedback),
-            CodexCookiePolicy::official().map_err(|_| OpenAiInitializeError::CookiePolicy)?,
+            cookie_policy,
         )
         .with_tickets(Arc::clone(&tickets)),
     );

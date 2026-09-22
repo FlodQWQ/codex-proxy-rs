@@ -601,6 +601,8 @@ fn rebuild_account(current: &ProviderAccount, rebuild: AccountRebuild) -> Provid
         rebuild.last_error_message,
     )
     .with_scheduling(current.concurrency_limit(), current.weight())
+    .with_outbound_proxy(current.outbound_proxy().cloned())
+    .with_request_location(current.request_location().cloned())
     .with_refresh_schedule(rebuild.has_refresh_token, rebuild.next_refresh_at)
 }
 

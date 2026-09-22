@@ -1613,14 +1613,22 @@ async fn scheduling_prefers_idle_plus_then_ticket_accounts_then_default_weights(
             }).await.unwrap();
         }
         let server = MockServer::start().await;
+        for id in ["acct_warm", "acct_ticket", "acct_default"] {
+            store.set_egress(
+                id,
+                Some(gateway_core::account::OutboundProxy::parse(&server.uri()).unwrap()),
+                None,
+            );
+        }
+        seed_ticket_cookie(&store, "acct_ticket").await;
         let mut config = valid_config();
-        config.config.api.base_url = server.uri();
+        config.config.api.base_url = "http://chatgpt.com".to_owned();
         let state_path = config._runtime.path().join("deploy/codex-tickets.json");
         std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
         std::fs::write(&state_path, serde_json::to_vec(&json!({
             "settings":{"enabled":true,"proxyUrl":"http://127.0.0.1:9","accountIds":["acct_ticket"],"revision":1},
             "records":{"acct_ticket/gpt-6-astra":{"ticket":format!("gAAAAA{}", "B".repeat(286)),
-                "expires":Utc::now().timestamp()+3600,"credential_revision":1,"attempts":[]}}
+                "issued_at":Utc::now().timestamp(),"expires":Utc::now().timestamp()+240,"credential_revision":1,"attempts":[]}}
         })).unwrap()).unwrap();
         let bundle = provider_openai::initialize(
             config.config.clone(),
@@ -1778,18 +1786,17 @@ async fn codex_tickets_admin_preserves_secrets_rejects_stale_updates_and_paused_
         ProviderAdminErrorKind::Conflict
     );
     for contribution in bundle.take_worker_contributions() {
-        if let WorkerContribution::Registration(registration) = contribution {
-            if registration.id.owner() == "openai-codex-tickets" {
-                if let WorkerRunnable::Scheduled { task, .. } = registration.runnable {
-                    task.run_cycle(gateway_core::task::WorkerCycleContext::new(
-                        registration.id,
-                        None,
-                        CancellationToken::new(),
-                    ))
-                    .await
-                    .unwrap();
-                }
-            }
+        if let WorkerContribution::Registration(registration) = contribution
+            && registration.id.owner() == "openai-codex-tickets"
+            && let WorkerRunnable::Scheduled { task, .. } = registration.runnable
+        {
+            task.run_cycle(gateway_core::task::WorkerCycleContext::new(
+                registration.id,
+                None,
+                CancellationToken::new(),
+            ))
+            .await
+            .unwrap();
         }
     }
     assert_eq!(
@@ -1810,7 +1817,13 @@ async fn codex_tickets_admin_preserves_secrets_rejects_stale_updates_and_paused_
 
 #[tokio::test]
 async fn codex_tickets_gate_and_inject_only_selected_account_model() {
-    for valid_ticket in [true, false] {
+    for (valid_ticket, issued_at, lifetime, with_cookie) in [
+        (true, Utc::now().timestamp(), 240, true),
+        (false, Utc::now().timestamp(), -1, true),
+        (false, 0, 3600, true),
+        (false, Utc::now().timestamp(), 3600, true),
+        (false, Utc::now().timestamp(), 240, false),
+    ] {
         let store = Arc::new(MemoryAccountStore::default());
         let id = "acct_ticket_forward";
         store
@@ -1824,10 +1837,19 @@ async fn codex_tickets_gate_and_inject_only_selected_account_model() {
             })
             .await;
         let server = MockServer::start().await;
+        store.set_egress(
+            id,
+            Some(gateway_core::account::OutboundProxy::parse(&server.uri()).unwrap()),
+            None,
+        );
+        if with_cookie {
+            seed_ticket_cookie(&store, id).await;
+        }
         let state = format!("gAAAAA{}", "B".repeat(286));
         Mock::given(method("POST"))
             .and(path("/codex/responses"))
             .and(header("x-codex-turn-state", state.as_str()))
+            .and(header("cookie", "__cflb=test-route"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
@@ -1837,12 +1859,14 @@ async fn codex_tickets_gate_and_inject_only_selected_account_model() {
             .mount(&server)
             .await;
         let mut config = valid_config();
-        config.config.api.base_url = server.uri();
+        config.config.api.base_url = "http://chatgpt.com".to_owned();
         let state_path = config._runtime.path().join("deploy/codex-tickets.json");
         std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
         let cache = json!({"settings":{"enabled":true,"proxyUrl":"http://127.0.0.1:9","accountIds":[id],"revision":1},
-            "records":{format!("{id}/gpt-6-astra"):{"ticket":state,"expires":Utc::now().timestamp()+if valid_ticket {3600} else {-1},
-                "credential_revision":store.account(id).unwrap().revision().get()+99,"attempts":[]}}});
+        "records":{format!("{id}/gpt-6-astra"):{"ticket":state,"issued_at":issued_at,"expires":if issued_at > 0 {issued_at+lifetime} else {Utc::now().timestamp()+lifetime},
+            "credential_revision":store.account(id).unwrap().revision().get()+99,"attempts":[
+                {"at":Utc::now().timestamp()-1000,"status":200,"length":292,"success":true,"result":"success"}
+            ]}}});
         std::fs::write(state_path, serde_json::to_vec(&cache).unwrap()).unwrap();
         let bundle = provider_openai::initialize(
             config.config.clone(),
@@ -1856,6 +1880,7 @@ async fn codex_tickets_gate_and_inject_only_selected_account_model() {
             json!(valid_ticket)
         );
         assert_eq!(view["accounts"][0]["models"][1]["ready"], json!(false));
+        assert_eq!(view["accounts"][0]["models"][0]["attempts"], 1);
         assert!(!view.to_string().contains("BBBBBBBB"));
         let payload = ProtocolPayload::json_object(
             "openai",
@@ -2015,14 +2040,55 @@ async fn codex_tickets_429_pauses_all_models_across_cycles_and_restart_until_exp
 
 #[tokio::test]
 async fn codex_tickets_trace_reuses_connection_without_credentials_and_rejects_reconnects() {
-    for (close, body, expected_ips) in [
-        (false, "ip=8.8.8.8\nloc=US\n", 1),
-        (true, "ip=8.8.8.8\nloc=US\n", 0),
-        (false, "ip=127.0.0.1\n", 0),
-        (false, "ip=10.0.0.1\n", 0),
-        (false, "ip=invalid\n", 0),
-        (false, "ip=2606:4700:4700::1111\n", 1),
+    for (close, body, expected_ips, cookie) in [
+        (
+            false,
+            "ip=8.8.8.8\nloc=US\n",
+            1,
+            "__cflb=test-route; Path=/; Max-Age=600",
+        ),
+        (
+            true,
+            "ip=8.8.8.8\nloc=US\n",
+            0,
+            "__cflb=test-route; Path=/; Max-Age=600",
+        ),
+        (
+            false,
+            "ip=127.0.0.1\n",
+            0,
+            "__cflb=test-route; Path=/; Max-Age=600",
+        ),
+        (
+            false,
+            "ip=10.0.0.1\n",
+            0,
+            "__cflb=test-route; Path=/; Max-Age=600",
+        ),
+        (
+            false,
+            "ip=invalid\n",
+            0,
+            "__cflb=test-route; Path=/; Max-Age=600",
+        ),
+        (
+            false,
+            "ip=2606:4700:4700::1111\n",
+            1,
+            "__cflb=test-route; Path=/; Max-Age=600",
+        ),
+        (false, "ip=8.8.8.8\n", 1, "unrelated=test; Path=/"),
+        (false, "ip=8.8.8.8\n", 1, "__cflb=test; Path=/other"),
+        (false, "ip=8.8.8.8\n", 1, "__cflb=test; Path=/; Max-Age=0"),
+        (false, "ip=8.8.8.8\n", 1, "__cflb=test; Path=/; Secure"),
+        (
+            false,
+            "ip=8.8.8.8\n",
+            1,
+            "__cflb=test; Path=/; Domain=evil.example",
+        ),
     ] {
+        let ready = cookie.starts_with("__cflb=test-route;");
         let server = MockServer::start().await;
         let trace = if close {
             ResponseTemplate::new(200)
@@ -2041,9 +2107,12 @@ async fn codex_tickets_trace_reuses_connection_without_credentials_and_rejects_r
         Mock::given(method("POST"))
             .and(path("/codex/responses"))
             .respond_with(
-                ResponseTemplate::new(200).insert_header("x-codex-turn-state", ticket.as_str()),
+                ResponseTemplate::new(200)
+                    .insert_header("x-codex-turn-state", ticket.as_str())
+                    .insert_header("set-cookie", cookie),
             )
             .expect(2)
+            .up_to_n_times(2)
             .mount(&server)
             .await;
         let store = Arc::new(MemoryAccountStore::default());
@@ -2058,11 +2127,16 @@ async fn codex_tickets_trace_reuses_connection_without_credentials_and_rejects_r
                 enabled: true,
             })
             .await;
+        store.set_egress(
+            id,
+            Some(gateway_core::account::OutboundProxy::parse(&server.uri()).unwrap()),
+            None,
+        );
         let mut config = valid_config();
-        config.config.api.base_url = server.uri();
+        config.config.api.base_url = "http://chatgpt.com".to_owned();
         let mut bundle = provider_openai::initialize(
             config.config,
-            provider_ports_with(store, Arc::new(TestOAuthPending::default())),
+            provider_ports_with(store.clone(), Arc::new(TestOAuthPending::default())),
         )
         .await
         .unwrap();
@@ -2078,34 +2152,101 @@ async fn codex_tickets_trace_reuses_connection_without_credentials_and_rejects_r
                 && registration.id.owner() == "openai-codex-tickets"
                 && let WorkerRunnable::Scheduled { task, .. } = registration.runnable
             {
-                task.run_cycle(gateway_core::task::WorkerCycleContext::new(
-                    registration.id,
-                    None,
-                    CancellationToken::new(),
-                ))
-                .await
-                .unwrap();
+                // 有效票据和 Cookie 不应在下一轮重新打票。
+                for _ in 0..if ready { 2 } else { 1 } {
+                    task.run_cycle(gateway_core::task::WorkerCycleContext::new(
+                        registration.id.clone(),
+                        None,
+                        CancellationToken::new(),
+                    ))
+                    .await
+                    .unwrap();
+                }
             }
         }
         let view = admin.codex_tickets().await.unwrap();
+        assert_eq!(view["ttlSeconds"], 240);
+        assert_eq!(view["refreshBeforeSeconds"], 60);
         for model in view["accounts"][0]["models"].as_array().unwrap() {
-            assert_eq!(model["successes"], 1, "{view}");
+            assert_eq!(model["windowSeconds"], 3600);
+            assert_eq!(model["ready"], ready);
+            assert_eq!(model["successes"], usize::from(ready), "{view}");
+            if !ready {
+                assert_eq!(model["lastAttempt"]["result"], "cookie_error");
+            }
             assert_eq!(
                 model["uniqueIps"], expected_ips,
                 "close={close}, body={body}, {view}"
             );
             assert_eq!(model["unknownIpAttempts"], 1 - expected_ips);
         }
+        let mut posts = 0;
         for request in server.received_requests().await.unwrap() {
             if request.url.path() == "/cdn-cgi/trace" {
                 assert!(!request.headers.contains_key("authorization"));
                 assert!(!request.headers.contains_key("chatgpt-account-id"));
                 assert!(!request.headers.contains_key("cookie"));
+            } else if request.method.as_str() == "POST" {
+                if ready && posts > 0 {
+                    assert_eq!(request.headers.get("cookie").unwrap(), "__cflb=test-route");
+                }
+                posts += 1;
             }
         }
         assert!(!view.to_string().contains("trace-private-token"));
         assert!(!view.to_string().contains("TTTTTTTT"));
+        if ready {
+            Mock::given(method("POST"))
+                .and(path("/codex/responses"))
+                .and(header("x-codex-turn-state", ticket.as_str()))
+                .and(header("cookie", "__cflb=test-route"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(COMPLETED_SESSION_SSE),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let payload = ProtocolPayload::json_object(
+                "openai",
+                json!({"model":"gpt-6-astra","input":"test"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap()
+            .with_context(Map::from_iter([("use_websocket".to_owned(), json!(false))]));
+            let mut stream = bundle
+                .core_provider()
+                .execute(
+                    initialized_model_request(
+                        Operation::Generate(GenerateRequest::from_protocol_payload(payload)),
+                        id,
+                        "gpt-6-astra",
+                    ),
+                    initialized_attempt_context("req_probe_cookie_forward", id),
+                )
+                .await
+                .unwrap();
+            while let Some(event) = stream.next().await {
+                event.unwrap();
+            }
+        }
     }
+}
+
+async fn seed_ticket_cookie(store: &Arc<MemoryAccountStore>, id: &str) {
+    store
+        .repository()
+        .capture_response_cookies(
+            &store.account(id).unwrap(),
+            &provider_openai::credential::CodexCookiePolicy::official().unwrap(),
+            &url::Url::parse("http://chatgpt.com/codex/responses").unwrap(),
+            &["__cflb=test-route; Path=/; Max-Age=600".to_owned()],
+        )
+        .await
+        .unwrap();
 }
 
 fn valid_config() -> TestOpenAiConfig {

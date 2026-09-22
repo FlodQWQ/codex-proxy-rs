@@ -1,11 +1,11 @@
-use super::{Attempt, TTL};
+use super::{ATTEMPT_WINDOW, Attempt};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub(super) fn summary(attempts: &[Attempt], now: i64) -> Value {
     let recent: Vec<_> = attempts
         .iter()
-        .filter(|a| a.at >= now - TTL && a.at <= now)
+        .filter(|a| a.at >= now - ATTEMPT_WINDOW && a.at <= now)
         .collect();
     let successes = recent.iter().filter(|a| a.success).count();
     let mut by_ip = BTreeMap::<Option<&str>, Vec<&Attempt>>::new();
@@ -27,7 +27,7 @@ pub(super) fn summary(attempts: &[Attempt], now: i64) -> Value {
         })
         .collect();
     ips.sort_by_key(|row| std::cmp::Reverse(row["lastAttempt"]["at"].as_i64().unwrap_or(0)));
-    json!({"windowSeconds":TTL,"maxAttempts":1000,"attempts":recent.len(),"successes":successes,
+    json!({"windowSeconds":ATTEMPT_WINDOW,"maxAttempts":1000,"attempts":recent.len(),"successes":successes,
         "successRate":if recent.is_empty() {None} else {Some(100.0 * successes as f64 / recent.len() as f64)},
         "uniqueIps":unique_ips,"unknownIpAttempts":unknown,"ips":ips,
         "lastAttempt":attempts.iter().filter(|a| a.at <= now).max_by_key(|a| a.at),"recentAttempts":recent})

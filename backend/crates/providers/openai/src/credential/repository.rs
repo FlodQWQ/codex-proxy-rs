@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use chrono::Utc;
 use gateway_core::account::{
     AccountErrorReason, AccountStateChange, CredentialCasOutcome, CredentialCasUpdate,
     CredentialRevision, CredentialState, LoadedCredential, ProviderAccount, ProviderAccountStore,
@@ -11,9 +12,14 @@ use gateway_core::account::{
 use gateway_core::routing::ProviderKind;
 use secrecy::ExposeSecret;
 use thiserror::Error;
+use url::Url;
 
+use super::cookie::CodexCookiePolicy;
 use super::security::{CodexCredentialCodec, CodexCredentialDataError, CodexRuntimeCredential};
-use super::types::{CodexCredentialData, CodexOAuthSecret};
+use super::types::{
+    CODEX_AUTHENTICATION_KIND_OAUTH, CodexCookie, CodexCookieCaptureOutcome, CodexCredentialData,
+    CodexOAuthSecret,
+};
 
 const PROVIDER_NAME: &str = "openai";
 
@@ -184,6 +190,73 @@ impl CodexCredentialRepository {
         CodexCredentialCodec::decode_complete(&loaded.credential).map_err(Into::into)
     }
 
+    /// 将上游响应中的 Provider-owned Cookie 按当前账号版本 CAS 写回凭据。
+    ///
+    /// 292 探针与业务请求共用这条写入路径，避免各自维护一份 Cookie 解析规则。
+    pub async fn capture_response_cookies(
+        &self,
+        account: &ProviderAccount,
+        policy: &CodexCookiePolicy,
+        response_origin: &Url,
+        headers: &[String],
+    ) -> Result<CodexCookieCaptureOutcome, CredentialRepositoryError> {
+        if account.authentication_kind() != CODEX_AUTHENTICATION_KIND_OAUTH {
+            return Ok(CodexCookieCaptureOutcome {
+                credential_revision: None,
+                rejected: headers.len(),
+            });
+        }
+        let parsed = policy.parse_response_headers(
+            account.id().as_str(),
+            account.revision().get(),
+            response_origin,
+            headers,
+            Utc::now(),
+        );
+        if parsed.inputs.is_empty() {
+            return Ok(CodexCookieCaptureOutcome {
+                credential_revision: None,
+                rejected: parsed.rejected,
+            });
+        }
+        let mut data = self.load_complete_data(account).await?;
+        let Some(cookies) = data.cookies_mut() else {
+            return Ok(CodexCookieCaptureOutcome {
+                credential_revision: None,
+                rejected: headers.len(),
+            });
+        };
+        for input in parsed.inputs {
+            let scope = policy.validate_capture(
+                &input.response_origin,
+                input.domain_attribute.as_deref(),
+                &input.name,
+                &input.path,
+            )?;
+            cookies.retain(|cookie| {
+                !(cookie.name == input.name
+                    && cookie.domain == scope.domain
+                    && cookie.path == input.path)
+            });
+            if !input.delete {
+                cookies.push(CodexCookie {
+                    name: input.name,
+                    value: input.value.expose_secret().to_owned(),
+                    domain: scope.domain,
+                    path: input.path,
+                    host_only: scope.host_only,
+                    secure: input.secure,
+                    expires_at: input.expires_at,
+                });
+            }
+        }
+        let revision = self.compare_and_swap_data(account, data).await?;
+        Ok(CodexCookieCaptureOutcome {
+            credential_revision: Some(revision.get()),
+            rejected: parsed.rejected,
+        })
+    }
+
     pub async fn compare_and_swap_data(
         &self,
         account: &ProviderAccount,
@@ -285,6 +358,8 @@ pub enum CredentialRepositoryError {
     RevisionConflict,
     #[error("provider account store is unavailable")]
     Store,
+    #[error("Codex Cookie policy rejected the value")]
+    CookiePolicy(#[from] super::cookie::CookiePolicyError),
 }
 
 impl From<gateway_core::error::StoreError> for CredentialRepositoryError {

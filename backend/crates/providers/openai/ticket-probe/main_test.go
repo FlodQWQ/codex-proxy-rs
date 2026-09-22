@@ -38,6 +38,9 @@ func TestProbeMatchesSub2apiHeadersBodyAndConnection(t *testing.T) {
 					t.Error("unexpected connection reuse")
 				}
 				probeRemotes = append(probeRemotes, r.RemoteAddr)
+				if r.Header.Get("Cookie") != "__cflb=test-route; __oailb=test-backend" {
+					t.Error("probe must forward account cookies")
+				}
 				for key, want := range map[string]string{"User-Agent": "codex_cli_rs/0.155.1 (Ubuntu 22.4.0; x86_64) xterm-256color", "Version": "0.155.1", "Originator": "codex_cli_rs", "OpenAI-Beta": "responses=experimental", "Accept": "text/event-stream", "Content-Type": "application/json", "session_id": "test-session"} {
 					if r.Header.Get(key) != want {
 						t.Errorf("header mismatch: %s", key)
@@ -48,11 +51,17 @@ func TestProbeMatchesSub2apiHeadersBodyAndConnection(t *testing.T) {
 					t.Error("body mismatch")
 				}
 				w.Header().Set("x-codex-turn-state", ticket)
+				w.Header().Add("Set-Cookie", "__cflb=next-route; Path=/; Secure")
+				w.Header().Add("Set-Cookie", "__oailb=next-backend; Path=/; Secure")
 			}))
 			defer server.Close()
 			for i := 0; i < 2; i++ {
 				input := sample(server.URL)
+				input.Headers["Cookie"] = "__cflb=test-route; __oailb=test-backend"
 				output := probe(input)
+				if len(output.SetCookieHeaders) != 2 || output.SetCookieHeaders[0] != "__cflb=next-route; Path=/; Secure" || output.SetCookieHeaders[1] != "__oailb=next-backend; Path=/; Secure" {
+					t.Error("response must preserve separate Set-Cookie fields")
+				}
 				if output.Result != "success" || output.Status != 200 || output.Ticket != ticket {
 					t.Error("expected valid ticket")
 				}
@@ -64,6 +73,23 @@ func TestProbeMatchesSub2apiHeadersBodyAndConnection(t *testing.T) {
 				t.Error("attempts must not share connections")
 			}
 		})
+	}
+}
+
+func TestOversizedCookiesPreserveRateLimitStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			return
+		}
+		for i := 0; i < 33; i++ {
+			w.Header().Add("Set-Cookie", "__cflb=test; Path=/")
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	output := probe(sample(server.URL))
+	if output.Status != 429 || output.Result != "cookie_error" || len(output.SetCookieHeaders) != 0 {
+		t.Error("oversized cookie batch must fail without hiding 429")
 	}
 }
 

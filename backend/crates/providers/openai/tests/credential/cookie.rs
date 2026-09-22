@@ -7,6 +7,27 @@ fn policy() -> CodexCookiePolicy {
 }
 
 #[test]
+fn official_policy_accepts_routing_cookies_without_broadening_custom_allowlist() {
+    let origin = Url::parse("https://chatgpt.com/backend-api/codex/responses").unwrap();
+    let official = CodexCookiePolicy::official().unwrap();
+    for name in ["__cflb", "__oailb"] {
+        assert!(official.validate_capture(&origin, None, name, "/").is_ok());
+        assert!(policy().validate_capture(&origin, None, name, "/").is_err());
+        assert!(
+            official
+                .validate_capture(&origin, Some("evil.example"), name, "/")
+                .is_err()
+        );
+    }
+    assert!(
+        official
+            .validate_capture(&origin, None, "unrelated", "/")
+            .is_err()
+    );
+    assert!(!official.may_replay(&origin, "chatgpt.com", "/other", true, true));
+}
+
+#[test]
 fn capture_should_reject_parent_public_suffix_outside_allowlist() {
     let error = policy()
         .validate_capture(

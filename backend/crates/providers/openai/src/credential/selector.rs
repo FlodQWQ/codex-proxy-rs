@@ -19,7 +19,6 @@ use gateway_core::provider_ports::{
     ProviderSessionExclusionPort, ProviderSessionExclusions, ProviderStoreError,
 };
 use gateway_core::routing::ProviderKind;
-use secrecy::ExposeSecret;
 use thiserror::Error;
 use url::Url;
 
@@ -30,7 +29,7 @@ use super::refresh::refresh_recovery_deadline;
 use super::repository::{CodexCredentialRepository, CredentialRepositoryError};
 use super::security::CodexRuntimeAuthentication;
 use super::types::{
-    CODEX_AUTHENTICATION_KIND_OAUTH, CodexCookie, CodexCookieCaptureOutcome, RuntimeCodexCookie,
+    CODEX_AUTHENTICATION_KIND_OAUTH, CodexCookieCaptureOutcome, RuntimeCodexCookie,
 };
 
 const CLOUDFLARE_RECOVERY_STALE_AFTER: Duration = Duration::from_secs(60 * 60);
@@ -1221,61 +1220,10 @@ impl CodexCredentialSelector {
         response_origin: &Url,
         headers: &[String],
     ) -> Result<CodexCookieCaptureOutcome, CredentialSelectionError> {
-        if account.authentication_kind() != CODEX_AUTHENTICATION_KIND_OAUTH {
-            return Ok(CodexCookieCaptureOutcome {
-                credential_revision: None,
-                rejected: headers.len(),
-            });
-        }
-        let parsed = self.cookie_policy.parse_response_headers(
-            account.id().as_str(),
-            account.revision().get(),
-            response_origin,
-            headers,
-            chrono::Utc::now(),
-        );
-        if parsed.inputs.is_empty() {
-            return Ok(CodexCookieCaptureOutcome {
-                credential_revision: None,
-                rejected: parsed.rejected,
-            });
-        }
-        let mut data = self.repository.load_complete_data(account).await?;
-        let Some(cookies) = data.cookies_mut() else {
-            return Ok(CodexCookieCaptureOutcome {
-                credential_revision: None,
-                rejected: headers.len(),
-            });
-        };
-        for input in parsed.inputs {
-            let scope = self.cookie_policy.validate_capture(
-                &input.response_origin,
-                input.domain_attribute.as_deref(),
-                &input.name,
-                &input.path,
-            )?;
-            cookies.retain(|cookie| {
-                !(cookie.name == input.name
-                    && cookie.domain == scope.domain
-                    && cookie.path == input.path)
-            });
-            if !input.delete {
-                cookies.push(CodexCookie {
-                    name: input.name,
-                    value: input.value.expose_secret().to_owned(),
-                    domain: scope.domain,
-                    path: input.path,
-                    host_only: scope.host_only,
-                    secure: input.secure,
-                    expires_at: input.expires_at,
-                });
-            }
-        }
-        let revision = self.repository.compare_and_swap_data(account, data).await?;
-        Ok(CodexCookieCaptureOutcome {
-            credential_revision: Some(revision.get()),
-            rejected: parsed.rejected,
-        })
+        self.repository
+            .capture_response_cookies(account, &self.cookie_policy, response_origin, headers)
+            .await
+            .map_err(Into::into)
     }
 
     fn cloudflare_challenge_delay(
@@ -1531,6 +1479,7 @@ impl From<CredentialRepositoryError> for CredentialSelectionError {
             CredentialRepositoryError::RevisionConflict | CredentialRepositoryError::Store => {
                 Self::Store
             }
+            CredentialRepositoryError::CookiePolicy(_) => Self::CookiePolicy,
         }
     }
 }

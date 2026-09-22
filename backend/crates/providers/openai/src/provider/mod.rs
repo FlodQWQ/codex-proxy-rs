@@ -113,7 +113,6 @@ const PROVIDER_NAME: &str = "openai";
 const HTTP_SSE_TRANSPORT: &str = "http_sse";
 const HTTP_JSON_TRANSPORT: &str = "http_json";
 const WEBSOCKET_TRANSPORT: &str = "websocket";
-const MAX_COOKIE_HEADER_BYTES: usize = 16 * 1024;
 /// 提交边界前最多保留 64 KiB 原始上游 chunk；达到阈值后结束无感换号窗口，
 /// 但不会把上游数据改写成协议失败。
 const MAX_STREAM_PREFETCH_BYTES: usize = 64 * 1024;
@@ -567,6 +566,17 @@ impl Provider for CodexProvider {
                 ));
             }
             if let Some(ticket) = tickets.ticket(lease.account(), upstream_model.as_str()) {
+                // Cookie 已按目标域名、路径和有效期筛选；删除或过期后不得单独使用票据。
+                if !lease
+                    .cookies()
+                    .iter()
+                    .any(|cookie| matches!(cookie.name.as_str(), "__cflb" | "__oailb"))
+                {
+                    return Err(provider_error(
+                        ProviderErrorKind::Unavailable,
+                        UpstreamSendState::NotSent,
+                    ));
+                }
                 upstream_request.turn_state = Some(ticket);
             }
         }
