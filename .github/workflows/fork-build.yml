@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FORK_RELEASE_SEQUENCE: '1'
+  FORK_RELEASE_SEQUENCE: '2'
 
 jobs:
   linux-amd64:
@@ -102,7 +102,7 @@ jobs:
             -v "$HOME/.cargo:/cargo" -v "$PWD:/workspace" \
             -w /workspace/backend \
             rust:1.98-bookworm@sha256:828077e0f5ed0401fbd9cb5b4d5dedca23bd13c7fe032f3e8b7313e7acd2a57f \
-            sh -c 'cargo +1.98.0 build --release --locked --bin codex-proxy-rs && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-host --test main system_update && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p provider-openai --test main && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-api --test main admin::accounts && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-admin --test main use_case::accounts && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-store --test main postgres::provider_accounts'
+            sh -c 'cargo +1.98.0 build --release --locked --bin codex-proxy-rs && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-host --test main system_update && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p provider-openai --test main && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-api --test main admin::accounts && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-api --lib user_cost_tests && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-admin --test main use_case::accounts && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-store --test main postgres::provider_accounts'
           install -m755 backend/target/release/codex-proxy-rs dist/codex-proxy-rs
           cd backend/crates/providers/openai/ticket-probe
           GOTOOLCHAIN=go1.27.0 CGO_ENABLED=0 go test ./...
