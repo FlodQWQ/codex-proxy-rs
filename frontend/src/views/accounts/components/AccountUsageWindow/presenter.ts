@@ -24,6 +24,10 @@ interface AccountLocalUsage {
   requestCountDisplay?: string
   totalTokens?: number
   totalTokensDisplay?: string
+  costEstimateStatus?: string
+  costs?: Array<{ currency: string, estimatedAmountDisplay: string }>
+  userCostMultiplier?: string
+  userCosts?: Array<{ currency: string, estimatedAmountDisplay: string }>
   requestBuckets?: AccountRequestBucket[]
 }
 
@@ -187,7 +191,23 @@ function accountLocalUsage(value: unknown): AccountLocalUsage | null {
     localUsage.totalTokens = value.totalTokens
   if (typeof value.totalTokensDisplay === 'string')
     localUsage.totalTokensDisplay = value.totalTokensDisplay
+  if (typeof value.costEstimateStatus === 'string')
+    localUsage.costEstimateStatus = value.costEstimateStatus
+  if (Array.isArray(value.costs))
+    localUsage.costs = currencyCosts(value.costs)
+  if (typeof value.userCostMultiplier === 'string')
+    localUsage.userCostMultiplier = value.userCostMultiplier
+  if (Array.isArray(value.userCosts))
+    localUsage.userCosts = currencyCosts(value.userCosts)
   return localUsage
+}
+
+function currencyCosts(value: unknown[]) {
+  return value.flatMap((cost) => {
+    if (!isRecord(cost) || typeof cost.currency !== 'string' || typeof cost.estimatedAmountDisplay !== 'string')
+      return []
+    return [{ currency: cost.currency, estimatedAmountDisplay: cost.estimatedAmountDisplay }]
+  })
 }
 
 function finiteNumber(value: unknown): value is number {
@@ -240,6 +260,25 @@ function localTokenDisplay(localUsage: AccountLocalUsage | null) {
 export function quotaWindowLocalUsageDisplay(window: AccountQuotaWindow) {
   const localUsage = accountLocalUsage(window.localUsage)
   return localTokenDisplay(localUsage) || null
+}
+
+export function quotaWindowCostDisplays(window: AccountQuotaWindow) {
+  const localUsage = accountLocalUsage(window.localUsage)
+  if (!localUsage?.costEstimateStatus)
+    return null
+  const accountCost = localUsage.costs?.find(item => item.currency.toUpperCase() === 'USD')
+  const userCost = localUsage.userCosts?.find(item => item.currency.toUpperCase() === 'USD')
+  if (!accountCost && !userCost && !localUsage.requestCount)
+    return null
+  const suffix = localUsage.costEstimateStatus === 'partial' ? '（部分费用）' : ''
+  const known = localUsage.costEstimateStatus !== 'unknown'
+  return {
+    account: known && accountCost ? `${accountCost.estimatedAmountDisplay}${suffix}` : '—（无法计价）',
+    user: localUsage.userCostMultiplier
+      ? (known && userCost ? `${userCost.estimatedAmountDisplay}${suffix}` : '—（无法计价）')
+      : null,
+    multiplier: localUsage.userCostMultiplier,
+  }
 }
 
 function requestCountDisplay(localUsage: AccountLocalUsage | null) {

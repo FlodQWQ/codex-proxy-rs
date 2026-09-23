@@ -5,6 +5,7 @@ import { computed } from 'vue'
 import { useUiClock } from '@/composables/useUiClock'
 import AccountRequestTimeline from '../AccountUsageWindow/AccountRequestTimeline.vue'
 import {
+  quotaWindowCostDisplays,
   quotaWindowLocalUsageDisplay,
   quotaWindowPresentation,
   resolveAccountUsageWindowPresentation,
@@ -41,6 +42,7 @@ const items = computed(() => props.windows.map((window) => {
     usedPercent: window.usedPercent,
     usedPercentDisplay: window.usedPercentDisplay,
     localUsageDisplay: quotaWindowLocalUsageDisplay(window),
+    costs: quotaWindowCostDisplays(window),
     resetAtDisplay: window.resetAtDisplay,
     percentTextClass: presentation.percentTextClass,
     barClass: presentation.barClass,
@@ -61,7 +63,7 @@ const items = computed(() => props.windows.map((window) => {
 
     <div
       class="grid min-w-0 gap-3"
-      :class="grouped ? 'grid-cols-2' : 'grid-cols-1'"
+      :class="grouped ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'"
     >
       <div v-for="item in items" :key="item.key" class="grid min-w-0 gap-1.5">
         <template v-if="item.local">
@@ -130,6 +132,26 @@ const items = computed(() => props.windows.map((window) => {
               :style="item.barStyle"
             />
           </div>
+
+          <p
+            v-if="item.costs"
+            class="m-0 flex min-w-0 items-baseline justify-between gap-2 text-[10px] leading-3.5 text-cp-text-tertiary"
+          >
+            <span class="shrink-0 font-emphasis">账号消费</span>
+            <span class="min-w-0 truncate text-right font-mono font-emphasis tabular-nums" :title="`当前额度周期内的本地计费，非上游账单：${item.costs.account}`">
+              {{ item.costs.account }}
+            </span>
+          </p>
+
+          <p
+            v-if="item.costs?.user"
+            class="m-0 flex min-w-0 items-baseline justify-between gap-2 text-[10px] leading-3.5 text-cp-text-tertiary"
+          >
+            <span class="shrink-0 font-emphasis" title="按统一倍率折算的展示值，不是 Client Key 实际扣费">用户折算 · {{ item.costs.multiplier }}×</span>
+            <span class="min-w-0 truncate text-right font-mono font-emphasis tabular-nums" :title="`折算消费，非实际扣费：${item.costs.user}`">
+              {{ item.costs.user }}
+            </span>
+          </p>
 
           <p class="m-0 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-3.5 text-cp-text-tertiary">
             <span class="shrink-0 font-emphasis">重置</span>

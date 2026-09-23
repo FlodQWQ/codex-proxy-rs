@@ -748,6 +748,11 @@ API Key 账号与 OAuth 共用现有 Responses、Images 和 standalone Search �
 客户端的 `image_generation` 和 `X-OpenAI-Actor-Authorization` 声明不改变账号的实际能力。
 账号列表和详情的 API Key `usage` 汇总该账号创建后仍保留的本地请求记录，`windowLabelDisplay` 为 `通用额度`；
 日志清理会影响累计范围，不代表上游余额。OAuth 账号仍按实际周/月额度窗口统计。
+额度窗口的 `localUsage` 对账号级窗口返回请求数、Tokens、`costEstimateStatus`（`known` / `partial` / `unknown`）
+和按币种汇总的 `costs`；金额使用当次已记录的本地计费事实，包含适用的模型定价倍率，
+不等于上游订阅账单。`userCostMultiplier` 固定为 `0.2`，`userCosts` 是把这些聚合金额按 0.2×
+折算的展示估值，不改变 Client Key 的实际结算与历史账本，也不代表独立用户/分组售价。
+部分请求无法计价时，两个金额都只是已知部分的总额。
 
 批量导入 AT / RT 使用 `accounts` JSON 数组，最多 200 项，不接受纯文本 token 列表。例如：
 

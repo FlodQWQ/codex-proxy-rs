@@ -281,6 +281,14 @@ pub(crate) fn quota_window_view(window: ProviderQuotaWindow) -> AccountQuotaWind
 
 pub(super) fn quota_local_usage(usage: &AccountUsage) -> Value {
     let total_tokens = usage.total_tokens.unwrap_or_default();
+    let known_cost_count = usage.cost_coverage.known_count();
+    let cost_estimate_status = if known_cost_count == 0 {
+        "unknown"
+    } else if usage.cost_coverage.unavailable_count > 0 {
+        "partial"
+    } else {
+        "known"
+    };
     serde_json::json!({
         "requestCount": usage.request_count,
         "requestCountDisplay": format_number(usage.request_count),
@@ -298,6 +306,10 @@ pub(super) fn quota_local_usage(usage: &AccountUsage) -> Value {
         "imageRequestFailedCount": usage.image_request_failed_count,
         "totalTokens": total_tokens,
         "totalTokensDisplay": format_compact_number(total_tokens),
+        "costEstimateStatus": cost_estimate_status,
+        "costs": usage.costs.iter().map(account_currency_cost_view).collect::<Vec<_>>(),
+        "userCostMultiplier": "0.2",
+        "userCosts": usage.costs.iter().filter_map(account_user_currency_cost_view).collect::<Vec<_>>(),
         "requestBuckets": usage.request_buckets.iter().map(|bucket| serde_json::json!({
             "bucketStart": bucket.bucket_start,
             "requestCount": bucket.request_count,
@@ -441,6 +453,32 @@ pub(super) fn account_currency_cost_view(cost: &AccountCost) -> CurrencyCostView
         currency: cost.currency.clone(),
         estimated_amount: cost.amount.as_str().to_owned(),
         estimated_amount_display: format_decimal_currency(cost.amount.as_str(), &cost.currency),
+    }
+}
+
+fn account_user_currency_cost_view(cost: &AccountCost) -> Option<CurrencyCostView> {
+    // 统一按 0.2× 展示，不修改原始计费事实或 Client Key 账本。
+    let amount = cost.amount.checked_div_u64(5)?;
+    Some(CurrencyCostView {
+        currency: cost.currency.clone(),
+        estimated_amount: amount.as_str().to_owned(),
+        estimated_amount_display: format_decimal_currency(amount.as_str(), &cost.currency),
+    })
+}
+
+#[cfg(test)]
+mod user_cost_tests {
+    use super::*;
+
+    #[test]
+    fn user_cost_uses_exact_one_fifth_of_account_cost() {
+        let cost = AccountCost {
+            currency: "USD".to_owned(),
+            amount: "0.1204956".parse().expect("valid cost"),
+        };
+        let user_cost = account_user_currency_cost_view(&cost).expect("user cost");
+        assert_eq!(user_cost.estimated_amount, "0.02409912");
+        assert_eq!(user_cost.estimated_amount_display, "$0.0241");
     }
 }
 
