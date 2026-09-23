@@ -59,6 +59,14 @@ where
             get(test_account_connection::<S>),
         )
         .route(
+            "/api/admin/accounts/fingerprint/models",
+            get(fingerprint_models::<S>),
+        )
+        .route(
+            "/api/admin/accounts/fingerprint-test",
+            post(test_account_fingerprint::<S>),
+        )
+        .route(
             "/api/admin/accounts/oauth/start",
             post(start_account_authorization::<S>),
         )
@@ -648,4 +656,44 @@ where
             Ok(Event::default().data(data))
         });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+async fn fingerprint_models<S>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let models = state
+        .admin_services()
+        .accounts()
+        .fingerprint_models()
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(fingerprint_models_data(models)),
+    ))
+}
+
+async fn test_account_fingerprint<S>(
+    _auth: AdminAuth,
+    State(state): State<S>,
+    AdminJson(request): AdminJson<AccountFingerprintTestRequest>,
+) -> Result<impl IntoResponse, AdminError>
+where
+    S: SessionState + Send + Sync,
+{
+    let (account_id, upstream_model) = request.into_command().map_err(map_wire_error)?;
+    let result = state
+        .admin_services()
+        .accounts()
+        .test_fingerprint(account_id, upstream_model)
+        .await
+        .map_err(map_service_error)?;
+    Ok(AdminResponse::new(
+        StatusCode::OK,
+        AdminEnvelope::ok(fingerprint_test_data(result)),
+    ))
 }

@@ -300,6 +300,7 @@ pub struct AdminRuntimePorts {
     pub providers: Vec<Arc<dyn ProviderAdmin>>,
     pub snapshot: Arc<dyn SnapshotControl>,
     pub account_probe: Arc<dyn AccountProbe>,
+    pub model_fingerprint_analyzer: Arc<dyn ports::model_fingerprint::ModelFingerprintAnalyzer>,
     pub proxy_probe: Arc<dyn ports::proxy::ProxyProbe>,
     pub client_distribution: Arc<dyn ClientDistributionResolver>,
     pub system: Arc<dyn SystemOperations>,
@@ -322,6 +323,7 @@ pub async fn initialize(
         providers,
         snapshot,
         account_probe: probe,
+        model_fingerprint_analyzer: fingerprint,
         proxy_probe,
         client_distribution,
         system,
@@ -357,6 +359,7 @@ pub async fn initialize(
         registry.clone(),
         snapshot.clone(),
         probe.clone(),
+        fingerprint,
     ));
     let backup_ports = store.backup();
     let backups = Arc::new(DefaultBackupService::new(

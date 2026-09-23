@@ -20,7 +20,13 @@ use crate::{
             AccountPageItem, AccountUpdateResult, AccountUsage, AccountUsageWindowQuery,
             AccountsUpdateResult, BatchUpdateAccounts, UpdateAccount,
         },
-        model_degradation::account_model_degradations,
+        model_degradation::{
+            ModelComparison, ModelObservation, account_model_degradations, compare_models,
+            is_comparable_model,
+        },
+        model_fingerprint::{
+            AccountFingerprintTestResult, MINIMUM_FINGERPRINT_CONFIDENCE,
+        },
         observability::TimeRange,
         provider_credentials::{
             AccountDirectoryItem, AccountDirectoryPage, AccountExportBundle, AccountPersonalInfo,
@@ -33,6 +39,9 @@ use crate::{
         quota_forecast_sampling::{QuotaForecastPoint, select_forecast_sample},
     },
     ports::{
+        model_fingerprint::{
+            FingerprintAnalysis, FingerprintOutput, ModelFingerprintAnalyzer,
+        },
         provider::ProviderAdminRegistry,
         store::{AccountRuntimeStore, AccountStore},
     },
@@ -146,6 +155,20 @@ pub trait AccountsService: Send + Sync {
         account_id: ProviderAccountId,
         upstream_model: UpstreamModelId,
     ) -> Result<AccountConnectionTestEventStream, AdminError>;
+
+    async fn fingerprint_models(
+        &self,
+    ) -> Result<Vec<crate::ports::model_fingerprint::FingerprintModel>, AdminError> {
+        Err(AdminError::unavailable("本地指纹库尚未安装"))
+    }
+
+    async fn test_fingerprint(
+        &self,
+        _account_id: ProviderAccountId,
+        _upstream_model: UpstreamModelId,
+    ) -> Result<AccountFingerprintTestResult, AdminError> {
+        Err(AdminError::unavailable("本地指纹库尚未安装"))
+    }
 }
 
 pub(crate) struct DefaultAccountsService {
@@ -154,6 +177,7 @@ pub(crate) struct DefaultAccountsService {
     providers: ProviderAdminRegistry,
     snapshot: Arc<dyn SnapshotControl>,
     probe: Arc<dyn AccountProbe>,
+    fingerprint: Arc<dyn ModelFingerprintAnalyzer>,
     reset_credit_locks:
         Arc<futures::lock::Mutex<BTreeMap<ProviderAccountId, Arc<futures::lock::Mutex<()>>>>>,
 }
@@ -166,6 +190,7 @@ impl DefaultAccountsService {
         providers: ProviderAdminRegistry,
         snapshot: Arc<dyn SnapshotControl>,
         probe: Arc<dyn AccountProbe>,
+        fingerprint: Arc<dyn ModelFingerprintAnalyzer>,
     ) -> Self {
         Self {
             accounts,
@@ -173,6 +198,7 @@ impl DefaultAccountsService {
             providers,
             snapshot,
             probe,
+            fingerprint,
             reset_credit_locks: Arc::new(futures::lock::Mutex::new(BTreeMap::new())),
         }
     }
@@ -976,6 +1002,158 @@ impl AccountsService for DefaultAccountsService {
         })
         .flat_map(futures::stream::iter);
         Ok(Box::pin(futures::stream::iter(initial).chain(terminal)))
+    }
+
+    async fn fingerprint_models(
+        &self,
+    ) -> Result<Vec<crate::ports::model_fingerprint::FingerprintModel>, AdminError> {
+        self.fingerprint
+            .models()
+            .await
+            .map(|models| {
+                models
+                    .into_iter()
+                    .filter(|model| is_comparable_model(&model.id))
+                    .collect()
+            })
+            .map_err(|_| AdminError::unavailable("本地指纹库不可用，请检查 VPS 安装"))
+    }
+
+    async fn test_fingerprint(
+        &self,
+        account_id: ProviderAccountId,
+        upstream_model: UpstreamModelId,
+    ) -> Result<AccountFingerprintTestResult, AdminError> {
+        let (stored, provider) = self.provider_for_account(&account_id).await?;
+        if stored.account.provider_kind.as_str() != "openai" {
+            return Err(AdminError::invalid("指纹检测目前仅支持 OpenAI 账号"));
+        }
+        let sent_model = upstream_model.as_str().to_owned();
+        if !is_comparable_model(&sent_model)
+            || !self
+                .fingerprint
+                .models()
+                .await
+                .map_err(|_| AdminError::unavailable("本地指纹库不可用，请检查 VPS 安装"))?
+                .iter()
+                .any(|model| model.id == sent_model)
+        {
+            return Err(AdminError::invalid("所选模型不在可比较的指纹目录中"));
+        }
+        let challenges = self
+            .fingerprint
+            .challenges()
+            .await
+            .map_err(|_| AdminError::unavailable("本地指纹库不可用，请检查 VPS 安装"))?;
+        if challenges.len() < 3 {
+            return Err(AdminError::unavailable("VPS 本地固定测试题不足"));
+        }
+
+        let mut outputs = Vec::with_capacity(3);
+        let mut attempted = 0;
+        let mut analysis = FingerprintAnalysis {
+            prediction: None,
+            probability: None,
+            used_outputs: 0,
+            diagnostics: Vec::new(),
+        };
+        for challenge in challenges.into_iter().take(6) {
+            attempted += 1;
+            let operation = provider
+                .connection_test_operation(&upstream_model, &challenge.prompt)
+                .map_err(|error| map_provider_error(error, "model fingerprint probe"))?;
+            let result = self
+                .probe
+                .probe(AccountProbeRequest {
+                    account_id: account_id.clone(),
+                    provider_kind: stored.account.provider_kind.clone(),
+                    upstream_model: upstream_model.clone(),
+                    operation,
+                })
+                .await;
+            if let Ok(result) = result {
+                outputs.push(FingerprintOutput {
+                    text: result.text.join("\n"),
+                    expected_count: challenge.expected_count,
+                });
+                if outputs.len() < 3 {
+                    continue;
+                }
+                analysis = self
+                    .fingerprint
+                    .analyze(&outputs)
+                    .await
+                    .map_err(|_| {
+                        AdminError::unavailable("本地指纹分析失败，请检查 VPS 安装")
+                    })?;
+                if analysis.used_outputs >= 3 {
+                    break;
+                }
+            }
+        }
+        if analysis.used_outputs < 3 {
+            return Ok(AccountFingerprintTestResult::inconclusive(
+                account_id.as_str().to_owned(),
+                sent_model,
+                attempted,
+                analysis,
+            ));
+        }
+        let (Some(prediction), Some(confidence)) =
+            (analysis.prediction.clone(), analysis.probability)
+        else {
+            return Ok(AccountFingerprintTestResult::inconclusive(
+                account_id.as_str().to_owned(),
+                sent_model,
+                attempted,
+                analysis,
+            ));
+        };
+        if !confidence.is_finite() || !(MINIMUM_FINGERPRINT_CONFIDENCE..=1.0).contains(&confidence)
+        {
+            return Ok(AccountFingerprintTestResult::inconclusive(
+                account_id.as_str().to_owned(),
+                sent_model,
+                attempted,
+                analysis,
+            ));
+        }
+        let degraded = match compare_models(&sent_model, &prediction) {
+            ModelComparison::Lower => true,
+            ModelComparison::EqualOrHigher => false,
+            ModelComparison::Incomparable => {
+                return Ok(AccountFingerprintTestResult::inconclusive(
+                    account_id.as_str().to_owned(),
+                    sent_model,
+                    attempted,
+                    analysis,
+                ));
+            }
+        };
+        let observed_at = Utc::now();
+        self.accounts
+            .record_model_fingerprint_observation(ModelObservation {
+                account_id: account_id.as_str().to_owned(),
+                request_id: uuid::Uuid::now_v7().to_string(),
+                routing_scope: "fingerprint_test".to_owned(),
+                group_ids: Vec::new(),
+                sent_model: sent_model.clone(),
+                response_model: prediction.clone(),
+                observed_at,
+                succeeded: true,
+            })
+            .await
+            .map_err(|error| map_store_error(error, "model fingerprint observation"))?;
+        Ok(AccountFingerprintTestResult::conclusive(
+            account_id.as_str().to_owned(),
+            sent_model,
+            prediction,
+            confidence,
+            degraded,
+            attempted,
+            analysis.used_outputs,
+            observed_at,
+        ))
     }
 }
 

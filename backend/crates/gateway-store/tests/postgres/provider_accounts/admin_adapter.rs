@@ -1,5 +1,5 @@
 use super::*;
-use gateway_admin::model::model_degradation::account_model_degradations;
+use gateway_admin::model::model_degradation::{ModelObservation, account_model_degradations};
 
 #[tokio::test]
 async fn model_degradation_query_filters_and_projects_persisted_usage() {
@@ -81,5 +81,45 @@ async fn model_degradation_query_filters_and_projects_persisted_usage() {
             .unwrap()
             .is_empty()
     );
+    database.close().await;
+}
+
+#[tokio::test]
+async fn fingerprint_observations_feed_the_existing_degradation_projection() {
+    let Some(database) = TestDatabase::create("model_fingerprint_observation").await else {
+        return;
+    };
+    PgProviderAccountRepository::new(database.pool.clone())
+        .insert_provider_account(account("acct_fingerprint_audit", "fingerprint-user"))
+        .await
+        .unwrap();
+    let now = chrono::DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap();
+    let store = admin_account_store(&database.pool);
+    store
+        .record_model_fingerprint_observation(ModelObservation {
+            account_id: "acct_fingerprint_audit".to_owned(),
+            request_id: "0197b7c2-9b2e-7c28-89a5-5b9237200001".to_owned(),
+            routing_scope: "fingerprint_test".to_owned(),
+            group_ids: Vec::new(),
+            sent_model: "gpt-6-astra".to_owned(),
+            response_model: "gpt-5.6-luna".to_owned(),
+            observed_at: now,
+            succeeded: true,
+        })
+        .await
+        .unwrap();
+
+    let ids = vec!["acct_fingerprint_audit".to_owned()];
+    let observations = store.load_model_observations(&ids, now).await.unwrap();
+    assert_eq!(observations.len(), 1);
+    let markers = account_model_degradations(observations, now);
+    let marker = &markers["acct_fingerprint_audit"][0];
+    assert_eq!(marker.routing_scope, "fingerprint_test");
+    assert_eq!(marker.expires_at, now + TimeDelta::hours(3));
+    assert!(store
+        .load_model_observations(&ids, now + TimeDelta::hours(3))
+        .await
+        .unwrap()
+        .is_empty());
     database.close().await;
 }

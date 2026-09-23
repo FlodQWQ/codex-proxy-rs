@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronDown, Ticket } from '@lucide/vue'
+import { ChevronDown, Fingerprint, Ticket } from '@lucide/vue'
 import { ref } from 'vue'
 
 import BaseButton from '@/components/base/BaseButton.vue'
@@ -19,6 +19,7 @@ import AccountConnectionTestModal from './components/AccountConnectionTestModal.
 import AccountCreateModal from './components/AccountCreateModal/index.vue'
 import AccountEditModal from './components/AccountEditModal.vue'
 import AccountFilters from './components/AccountFilters.vue'
+import AccountFingerprintModal from './components/AccountFingerprintModal.vue'
 import AccountImportTasks from './components/AccountImportTasks/index.vue'
 import AccountOverviewCards from './components/AccountOverviewCards.vue'
 import AccountPlanBadge from './components/AccountPlanBadge.vue'
@@ -42,6 +43,7 @@ import { accountColumns, derivedAccountStatus } from './constants'
 
 const selectedIds = ref<Set<string>>(new Set())
 const showCodexTickets = ref(false)
+const showFingerprintTest = ref(false)
 const { ticketAccounts, ticketsEnabled, ticketStatusError, reloadTicketStatus } = useCodexTicketStatus()
 const { visibleColumns, columnOptions, setColumnVisible, setColumnOrder, resetColumns } = useTableColumns(accountColumns, 'accounts')
 const {
@@ -236,6 +238,9 @@ const {
             <BaseButton variant="secondary" @click="showCodexTickets = true">
               <Ticket class="size-4" />292 打票
             </BaseButton>
+            <BaseButton variant="secondary" @click="showFingerprintTest = true">
+              <Fingerprint class="size-4" />检测指纹
+            </BaseButton>
             <span v-if="ticketStatusError" role="status" class="text-cp-xs text-cp-warning-text">打票状态读取失败</span>
             <BaseTableColumnSettings
               :options="columnOptions"
@@ -417,6 +422,7 @@ const {
     </section>
 
     <CodexTicketsModal v-model="showCodexTickets" @saved="reloadTicketStatus" />
+    <AccountFingerprintModal v-model="showFingerprintTest" @completed="loadAccounts()" />
     <AccountConnectionTestModal
       v-model="showConnectionTestModal"
       v-model:selected-model="connectionTestSelectedModel"

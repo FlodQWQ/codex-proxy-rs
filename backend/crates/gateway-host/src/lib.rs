@@ -2,6 +2,7 @@
 
 pub mod client_distribution;
 pub mod config;
+mod model_fingerprint;
 mod logging;
 pub mod pricing;
 pub mod proxy_probe;
@@ -13,7 +14,8 @@ use std::sync::Arc;
 
 use axum::Router;
 use gateway_admin::ports::{
-    client_distribution::ClientDistributionResolver, system::SystemOperations,
+    client_distribution::ClientDistributionResolver, model_fingerprint::ModelFingerprintAnalyzer,
+    system::SystemOperations,
 };
 use gateway_core::health::{HealthProbe, WorkerHealthSource};
 use gateway_core::lifecycle::CancellationToken;
@@ -92,6 +94,13 @@ impl HostBundle {
         + 'static,
     ) -> Arc<dyn gateway_admin::ports::proxy::ProxyProbe> {
         Arc::new(proxy_probe::HttpProxyProbe::default().with_client_builder(build_client))
+    }
+
+    #[must_use]
+    pub fn model_fingerprint_analyzer(&self) -> Arc<dyn ModelFingerprintAnalyzer> {
+        Arc::new(model_fingerprint::LocalModelTrace::new(
+            self.config.runtime_data_dir().join("modeltrace"),
+        ))
     }
 
     #[must_use]

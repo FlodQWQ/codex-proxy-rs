@@ -16,6 +16,9 @@ export * from './modules/backups'
 // Dashboard 聚合
 export * from './modules/dashboard'
 
+// ModelTrace 指纹检测
+export * from './modules/model-fingerprint'
+
 // 模型定价
 export * from './modules/pricing'
 

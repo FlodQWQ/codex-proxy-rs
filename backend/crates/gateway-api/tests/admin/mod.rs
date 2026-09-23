@@ -180,6 +180,9 @@ impl AdminTestFixture {
                 providers,
                 snapshot: Arc::new(NoopSnapshot),
                 account_probe: Arc::new(NoopProbe),
+                model_fingerprint_analyzer: Arc::new(
+                    gateway_admin::ports::model_fingerprint::UnavailableModelFingerprintAnalyzer,
+                ),
                 proxy_probe: Arc::new(proxies::SuccessfulProbe),
                 client_distribution: Arc::new(StaticClientDistribution),
                 system,

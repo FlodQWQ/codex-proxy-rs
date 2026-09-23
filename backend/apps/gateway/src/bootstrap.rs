@@ -84,6 +84,7 @@ pub async fn run() -> Result<(), BootstrapError> {
             providers: vec![openai.admin_provider(), xai.admin_provider()],
             snapshot: core.snapshot_control(),
             account_probe: core.account_probe(),
+            model_fingerprint_analyzer: host.model_fingerprint_analyzer(),
             proxy_probe: host.proxy_probe(provider_openai::build_reqwest_client_with_custom_ca),
             client_distribution: host.client_distribution_resolver(),
             system: host.system_operations(),

@@ -97,6 +97,40 @@ fn grade(model: &str) -> Option<(&'static str, u16, u8)> {
     Some(("gpt", generation, tier))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelComparison {
+    Lower,
+    EqualOrHigher,
+    Incomparable,
+}
+
+#[must_use]
+pub fn compare_models(sent_model: &str, response_model: &str) -> ModelComparison {
+    let (Some((sent_family, sent_generation, sent_tier)), Some((response_family, response_generation, response_tier))) =
+        (grade(&normalized(sent_model)), grade(&normalized(response_model)))
+    else {
+        return ModelComparison::Incomparable;
+    };
+    if sent_family != response_family {
+        return ModelComparison::Incomparable;
+    }
+    if response_generation <= sent_generation
+        && response_tier <= sent_tier
+        && (response_generation < sent_generation || response_tier < sent_tier)
+    {
+        ModelComparison::Lower
+    } else if response_generation >= sent_generation && response_tier >= sent_tier {
+        ModelComparison::EqualOrHigher
+    } else {
+        ModelComparison::Incomparable
+    }
+}
+
+#[must_use]
+pub fn is_comparable_model(model: &str) -> bool {
+    grade(&normalized(model)).is_some()
+}
+
 /// 只保留最近三小时的降智证据；恢复不能延长到期时间。
 #[must_use]
 pub fn account_model_degradations(
@@ -122,15 +156,13 @@ pub fn account_model_degradations(
     }
     let mut result = BTreeMap::<String, Vec<ModelDegradation>>::new();
     for ((account_id, _, _, sent), observations) in scopes {
-        let Some((family, generation, tier)) = grade(&sent) else {
+        if !is_comparable_model(&sent) {
             continue;
-        };
+        }
         let downgrade = observations
             .iter()
             .filter(|item| {
-                grade(&normalized(&item.response_model)).is_some_and(|(f, g, t)| {
-                    f == family && g <= generation && t <= tier && (g < generation || t < tier)
-                })
+                compare_models(&sent, &item.response_model) == ModelComparison::Lower
             })
             .max_by_key(|item| (item.observed_at, &item.request_id));
         let Some(downgrade) = downgrade else {
@@ -142,8 +174,8 @@ pub fn account_model_degradations(
                 // 同一时间的并发请求不能作为“后续恢复”的证据。
                 item.succeeded
                     && item.observed_at > downgrade.observed_at
-                    && grade(&normalized(&item.response_model))
-                        .is_some_and(|(f, g, t)| f == family && g >= generation && t >= tier)
+                    && compare_models(&sent, &item.response_model)
+                        == ModelComparison::EqualOrHigher
             })
             .max_by_key(|item| item.observed_at);
         result

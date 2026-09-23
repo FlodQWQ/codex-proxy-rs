@@ -407,27 +407,35 @@ impl AccountStore for PgAdminAccountStore {
         }
         validate_admin_account_ids(account_ids)
             .map_err(|error| admin_store_error(ENTITY, error))?;
-        // 每组相同模型观测只需最新一条，避免把全部使用记录传回应用层。
+        // 每组相同模型观测只需最新一条；管理员指纹观测走独立记录表，不计入用量。
         let rows =
             self.query_budget
                 .run("account model observations", async {
                     sqlx::query(
-                "select distinct on (provider_account_ref, routing_scope, routing_group_refs,
-                    upstream_model_id, upstream_response_model, (outcome = 'succeeded'))
-                    id, provider_account_ref, routing_scope, routing_group_refs,
-                    upstream_model_id, upstream_response_model, started_at,
-                    outcome = 'succeeded' as succeeded
-                 from model_requests
-                 where provider_account_ref = any($1) and provider_kind = 'openai'
-                   and started_at > $2 and started_at <= $3 and completed_at <= $3
-                   and outcome <> 'running' and not compact
-                   and request_kind is distinct from 'prewarm'
-                   and endpoint not like '%/compact'
-                   and upstream_model_id is not null and upstream_response_model is not null
-                   and (coalesce(total_tokens, 0) > 0 or coalesce(cost_amount, 0) > 0)
-                 order by provider_account_ref, routing_scope, routing_group_refs,
-                    upstream_model_id, upstream_response_model, (outcome = 'succeeded'),
-                    started_at desc, id desc"
+                "with usage_observations as (
+                    select distinct on (provider_account_ref, routing_scope, routing_group_refs,
+                        upstream_model_id, upstream_response_model, (outcome = 'succeeded'))
+                        id::text as id, provider_account_ref, routing_scope, routing_group_refs,
+                        upstream_model_id, upstream_response_model, started_at,
+                        outcome = 'succeeded' as succeeded
+                    from model_requests
+                    where provider_account_ref = any($1) and provider_kind = 'openai'
+                      and started_at > $2 and started_at <= $3 and completed_at <= $3
+                      and outcome <> 'running' and not compact
+                      and request_kind is distinct from 'prewarm'
+                      and endpoint not like '%/compact'
+                      and upstream_model_id is not null and upstream_response_model is not null
+                      and (coalesce(total_tokens, 0) > 0 or coalesce(cost_amount, 0) > 0)
+                    order by provider_account_ref, routing_scope, routing_group_refs,
+                        upstream_model_id, upstream_response_model, (outcome = 'succeeded'),
+                        started_at desc, id desc
+                 )
+                 select * from usage_observations
+                 union all
+                 select id::text, provider_account_ref, 'fingerprint_test'::text,
+                    array[]::text[], sent_model, response_model, observed_at, true
+                 from provider_account_fingerprint_observations
+                 where provider_account_ref = any($1) and observed_at > $2 and observed_at <= $3"
             )
             .bind(account_ids).bind(now - TimeDelta::hours(3)).bind(now)
             .fetch_all(&self.pool).await
@@ -449,6 +457,34 @@ impl AccountStore for PgAdminAccountStore {
                 })
             })
             .collect()
+    }
+
+    async fn record_model_fingerprint_observation(
+        &self,
+        observation: gateway_admin::model::model_degradation::ModelObservation,
+    ) -> AdminStoreResult<()> {
+        sqlx::query(
+            "delete from provider_account_fingerprint_observations
+             where observed_at <= $1 - interval '3 hours'",
+        )
+        .bind(observation.observed_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| admin_store_error(ENTITY, error))?;
+        sqlx::query(
+            "insert into provider_account_fingerprint_observations
+                (id, provider_account_ref, sent_model, response_model, observed_at)
+             values ($1::uuid, $2, $3, $4, $5)",
+        )
+        .bind(&observation.request_id)
+        .bind(&observation.account_id)
+        .bind(&observation.sent_model)
+        .bind(&observation.response_model)
+        .bind(observation.observed_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| admin_store_error(ENTITY, error))?;
+        Ok(())
     }
 
     async fn list_accounts(

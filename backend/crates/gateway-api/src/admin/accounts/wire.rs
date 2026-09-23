@@ -679,6 +679,23 @@ impl AccountTestQuery {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountFingerprintTestRequest {
+    pub account_id: String,
+    pub model_id: String,
+}
+
+impl AccountFingerprintTestRequest {
+    pub fn into_command(self) -> Result<(ProviderAccountId, UpstreamModelId), WireValidationError> {
+        AccountTestQuery {
+            account_id: self.account_id,
+            model_id: self.model_id,
+        }
+        .into_command()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountModelView {
     pub id: String,
@@ -688,6 +705,19 @@ pub struct AccountModelView {
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountModelsData {
     pub models: Vec<AccountModelView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountFingerprintTestData {
+    pub account_id: String,
+    pub sent_model: String,
+    pub response_model: Option<String>,
+    pub confidence: Option<f64>,
+    pub status: String,
+    pub attempted: usize,
+    pub used_outputs: usize,
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

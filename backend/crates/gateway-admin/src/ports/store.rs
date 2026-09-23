@@ -96,6 +96,13 @@ pub trait AccountStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    async fn record_model_fingerprint_observation(
+        &self,
+        _observation: crate::model::model_degradation::ModelObservation,
+    ) -> AdminStoreResult<()> {
+        Ok(())
+    }
+
     async fn list_accounts(
         &self,
         query: AccountListQuery,

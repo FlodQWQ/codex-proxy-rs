@@ -57,6 +57,37 @@ pub(super) fn account_models_data(result: ProviderModels) -> AccountModelsData {
     }
 }
 
+pub(super) fn fingerprint_models_data(
+    models: Vec<gateway_admin::ports::model_fingerprint::FingerprintModel>,
+) -> AccountModelsData {
+    AccountModelsData {
+        models: models
+            .into_iter()
+            .map(|model| AccountModelView {
+                id: model.id,
+                label: model.label,
+            })
+            .collect(),
+    }
+}
+
+pub(super) fn fingerprint_test_data(
+    result: gateway_admin::model::model_fingerprint::AccountFingerprintTestResult,
+) -> AccountFingerprintTestData {
+    AccountFingerprintTestData {
+        account_id: result.account_id,
+        sent_model: result.sent_model,
+        response_model: result.response_model,
+        confidence: result.confidence,
+        status: result.status.as_str().to_owned(),
+        attempted: result.attempted,
+        used_outputs: result.used_outputs,
+        expires_at: result
+            .expires_at
+            .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+    }
+}
+
 pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> AccountView {
     let AccountDirectoryItem {
         model_degradation,

@@ -99,6 +99,19 @@ curl -i http://127.0.0.1:8080/healthz
 
 `204 No Content` 表示应用、PostgreSQL、Redis 和后台任务的健康检查通过，不代表每个上游账号都可用。
 
+## ModelTrace 指纹检测
+
+指纹库保存在 CPR 安装目录的 `.runtime/data/modeltrace`，不单独开放端口。在运行 CPR 的仓库或安装目录运行：
+
+```bash
+bash deploy/install-modeltrace.sh
+```
+
+脚本会 clone 并固定到已验证的 ModelTrace commit，安装 NumPy 并校验题库。systemd 部署使用宿主机 Python 3，Compose 部署使用 CPR 容器 Python 3。
+更新 CPR 运行环境后，如需重建分析环境可再次运行；若 checkout 有本地改动，脚本会停止而不覆盖。
+
+账号管理中的“检测指纹”只对 OpenAI 账号开放。一次检测最多向所选账号发送六条固定挑战，消耗对应上游额度；达到三条有效回答和 70% 置信度后，才使用账号现有的三小时降智标记逻辑。原始回答不会作为使用记录保存。
+
 不要把未脱敏的 `docker compose config` 或 `docker inspect` 输出上传到工单；它们会包含
 PostgreSQL/Redis 启动密码。日常校验使用 `config --quiet`。
 

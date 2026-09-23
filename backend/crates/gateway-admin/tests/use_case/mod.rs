@@ -247,6 +247,9 @@ impl AdminHarness {
                 providers: self.providers,
                 snapshot: Arc::new(NoopSnapshot),
                 account_probe: self.probe,
+                model_fingerprint_analyzer: Arc::new(
+                    gateway_admin::ports::model_fingerprint::UnavailableModelFingerprintAnalyzer,
+                ),
                 proxy_probe: Arc::new(proxies::TestProxies::default()),
                 client_distribution: Arc::new(NoopClientDistribution),
                 system: self.system,

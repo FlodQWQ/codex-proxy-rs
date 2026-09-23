@@ -76,3 +76,16 @@ fn degradation_normalizes_aliases_dates_and_group_order() {
     tradeoff.sent_model = "gpt-5.4".to_owned();
     assert!(account_model_degradations(vec![tradeoff], now).is_empty());
 }
+
+#[test]
+fn fingerprint_degradation_uses_the_same_three_hour_marker() {
+    let mut detected = observation(0, "gpt-5.6-luna");
+    detected.routing_scope = "fingerprint_test".to_owned();
+    let now = detected.observed_at + Duration::minutes(5);
+    let markers = account_model_degradations(vec![detected.clone()], now);
+    let marker = &markers["account-a"][0];
+    assert_eq!(marker.routing_scope, "fingerprint_test");
+    assert_eq!(marker.sent_model, "gpt-6-astra");
+    assert_eq!(marker.response_model, "gpt-5.6-luna");
+    assert_eq!(marker.expires_at, detected.observed_at + Duration::hours(3));
+}

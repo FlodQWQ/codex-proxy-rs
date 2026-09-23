@@ -535,6 +535,8 @@ Fork Build 产物另含 `codex-ticket-probe`，须与主程序放在同一目录
 | `GET` | `/api/admin/accounts/models` | `accountId` | 优先读取该 Provider + 套餐的模型 cache，缺失时有限实时拉取 |
 | `POST` | `/api/admin/accounts/models/refresh` | `{ accountId }` | 强制拉取最新模型并覆盖 cache |
 | `GET` | `/api/admin/accounts/connection-test` | `accountId`、`modelId` | 通过 SSE 返回实时连接测试事件，不作为业务 Responses 用量记录 |
+| `GET` | `/api/admin/accounts/fingerprint/models` | 无 | 返回 VPS 本地 ModelTrace 指纹库中可比较的 GPT 模型 |
+| `POST` | `/api/admin/accounts/fingerprint-test` | `{ accountId, modelId }` | 对 OpenAI 账号运行固定挑战，满足置信度条件时写入三小时降智观测 |
 | `POST` | `/api/admin/accounts/oauth/start` | `{ provider, name, accountId?, outboundProxyId?, outboundProxyUrl? }` | 创建 OpenAI 或 xAI OAuth flow；`accountId` 表示重新授权 |
 | `POST` | `/api/admin/accounts/oauth/complete` | `{ provider, flowId, callbackUrl, settings? }` | 消费 OAuth callback；首次授权可附带账号设置，重新授权保留原设置 |
 
@@ -676,6 +678,16 @@ OAuth 等待回调期间不持有保护；提交仍拒绝已删除或连接配�
 - `sendState` 为 `not_sent`、`sent`、`ambiguous`，非 Provider 错误为 `null`。
 - `error`、`providerErrorCode`、`providerErrorType`、`upstreamStatus`、`upstreamContentType` 和
   `upstreamBody` 是实际捕获的原始诊断字段；缺失时为 `null`，不会由本地猜测或翻译。
+
+### 账号模型指纹检测
+
+`GET /api/admin/accounts/fingerprint/models` 与 `POST /api/admin/accounts/fingerprint-test` 需要管理员会话。
+检测仅支持 OpenAI 账号；每次最多向所选账号发送六条固定挑战，需三条有效回答且 ModelTrace 归因置信度至少为 70%。
+无法比较、回答不足或置信度不足时返回 `inconclusive`，不改变降智状态。高置信结果使用现有模型降智观测投影，标记在三小时后到期，
+并显示请求模型、推断模型及检测时间。原始回答仅在当前请求期间用于归因，不保存为使用记录或日志。ModelTrace 是候选库内的归因估计，不能单独证明模型能力。
+
+ModelTrace checkout 和本地指纹库位于 VPS 的 `.runtime/data/modeltrace`，不开放独立公网服务。新版本 CPR 镜像需包含 Python 3；
+在仓库目录运行 `deploy/install-modeltrace.sh` clone 固定版本并安装分析器依赖。
 
 ### 后台导入任务
 
