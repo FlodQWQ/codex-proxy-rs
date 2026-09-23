@@ -1086,7 +1086,16 @@ impl AccountsService for DefaultAccountsService {
                     .map_err(|_| {
                         AdminError::unavailable("本地指纹分析失败，请检查 VPS 安装")
                     })?;
-                if analysis.used_outputs >= 3 {
+                let confidence_is_sufficient = analysis.probability.is_some_and(|value| {
+                    value.is_finite() && (MINIMUM_FINGERPRINT_CONFIDENCE..=1.0).contains(&value)
+                });
+                let prediction_is_comparable = analysis.prediction.as_deref().is_some_and(
+                    |prediction| compare_models(&sent_model, prediction) != ModelComparison::Incomparable,
+                );
+                if analysis.used_outputs >= 3
+                    && confidence_is_sufficient
+                    && prediction_is_comparable
+                {
                     break;
                 }
             }

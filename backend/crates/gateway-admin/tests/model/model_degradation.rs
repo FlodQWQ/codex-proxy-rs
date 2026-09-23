@@ -1,5 +1,7 @@
 use chrono::{Duration, Utc};
-use gateway_admin::model::model_degradation::{ModelObservation, account_model_degradations};
+use gateway_admin::model::model_degradation::{
+    ModelComparison, ModelObservation, account_model_degradations, compare_models,
+};
 
 fn observation(minutes: i64, response: &str) -> ModelObservation {
     ModelObservation {
@@ -88,4 +90,20 @@ fn fingerprint_degradation_uses_the_same_three_hour_marker() {
     assert_eq!(marker.sent_model, "gpt-6-astra");
     assert_eq!(marker.response_model, "gpt-5.6-luna");
     assert_eq!(marker.expires_at, detected.observed_at + Duration::hours(3));
+}
+
+#[test]
+fn model_comparison_requires_a_comparable_model_family() {
+    assert_eq!(
+        compare_models("gpt-6-astra", "gpt-5.6-luna"),
+        ModelComparison::Lower
+    );
+    assert_eq!(
+        compare_models("gpt-6-astra", "gpt-6-astra"),
+        ModelComparison::EqualOrHigher
+    );
+    assert_eq!(
+        compare_models("gpt-6-astra", "unknown-model"),
+        ModelComparison::Incomparable
+    );
 }

@@ -9,6 +9,7 @@ on:
       - 'release/version.yaml'
       - 'deploy/update-cpr.sh'
       - 'deploy/test-update-cpr.py'
+      - 'deploy/install-modeltrace.sh'
       - 'deploy/migrate-cpr-config.py'
       - 'deploy/test-migrate-cpr-config.py'
       - '.github/workflows/fork-build.yml'
@@ -22,7 +23,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FORK_RELEASE_SEQUENCE: '2'
+  FORK_RELEASE_SEQUENCE: '3'
+  MODELTRACE_REVISION: '55a2e4a55170423b484d701e9a82ab62b268c811'
 
 jobs:
   linux-amd64:
@@ -47,6 +49,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkout pinned ModelTrace source
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/xqy2006/ModelTrace.git "$RUNNER_TEMP/modeltrace"
+          git -C "$RUNNER_TEMP/modeltrace" fetch --depth 1 origin "$MODELTRACE_REVISION"
+          git -C "$RUNNER_TEMP/modeltrace" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/modeltrace" rev-parse HEAD)" = "$MODELTRACE_REVISION"
+          test -s "$RUNNER_TEMP/modeltrace/data/unified_bank.json"
+          test -s "$RUNNER_TEMP/modeltrace/challenge_suite.py"
+          test -s "$RUNNER_TEMP/modeltrace/fingerprint.py"
+          test -z "$(git -C "$RUNNER_TEMP/modeltrace" ls-files -s | awk '$1 == 120000 { print; exit }')"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -109,6 +122,9 @@ jobs:
           GOTOOLCHAIN=go1.27.0 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../../../../../dist/codex-ticket-probe .
           cd ../../../../..
           cp -a backend/crates/providers/openai/ticket-probe dist/ticket-probe-source
+          mkdir -p dist/modeltrace
+          cp -a "$RUNNER_TEMP/modeltrace/." dist/modeltrace/
+          printf '%s\n' "$MODELTRACE_REVISION" > dist/modeltrace/.git/CPR_REVISION
           cp -a frontend/dist dist/web/dist
           printf '%s\n' "$GITHUB_SHA" > dist/REVISION
           printf '%s\n' "$version" > dist/VERSION

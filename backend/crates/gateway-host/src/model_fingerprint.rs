@@ -1,9 +1,11 @@
 //! 通过 VPS 本地 ModelTrace checkout 执行固定题库与原版指纹算法。
 
 use std::{
+    fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
@@ -86,12 +88,16 @@ struct ChallengesResponse {
 
 pub struct LocalModelTrace {
     home: PathBuf,
+    prepare_lock: Arc<Mutex<()>>,
 }
 
 impl LocalModelTrace {
     #[must_use]
     pub fn new(home: PathBuf) -> Self {
-        Self { home }
+        Self {
+            home,
+            prepare_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     async fn run(
@@ -100,11 +106,11 @@ impl LocalModelTrace {
         input: Option<Vec<u8>>,
     ) -> Result<Vec<u8>, FingerprintUnavailable> {
         let home = self.home.clone();
+        let prepare_lock = Arc::clone(&self.prepare_lock);
         tokio::task::spawn_blocking(move || {
-            let python = if cfg!(windows) {
-                home.join(".venv").join("Scripts").join("python.exe")
-            } else {
-                home.join(".venv").join("bin").join("python")
+            let python = {
+                let _guard = prepare_lock.lock().map_err(|_| FingerprintUnavailable)?;
+                ensure_python(&home)?
             };
             let mut child = Command::new(python)
                 .arg("-c")
@@ -150,6 +156,73 @@ impl LocalModelTrace {
         let output = self.run(action, input).await?;
         serde_json::from_slice(&output).map_err(|_| FingerprintUnavailable)
     }
+}
+
+fn ensure_python(home: &Path) -> Result<PathBuf, FingerprintUnavailable> {
+    if !home.join("challenge_suite.py").is_file()
+        || !home.join("fingerprint.py").is_file()
+        || !home.join("data").join("unified_bank.json").is_file()
+    {
+        return Err(FingerprintUnavailable);
+    }
+
+    let venv = home.join(".venv");
+    let python = if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    };
+    let ready = venv.join(".cpr-ready");
+    if python.is_file() && ready.is_file() {
+        return Ok(python);
+    }
+
+    if let Ok(metadata) = fs::symlink_metadata(&venv) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(FingerprintUnavailable);
+        }
+        fs::remove_dir_all(&venv).map_err(|_| FingerprintUnavailable)?;
+    }
+    let bootstrap_python = if cfg!(windows) { "python" } else { "python3" };
+    let created = Command::new(bootstrap_python)
+        .args(["-m", "venv"])
+        .arg(&venv)
+        .current_dir(home)
+        .output()
+        .map_err(|_| FingerprintUnavailable)?;
+    if !created.status.success() {
+        return Err(FingerprintUnavailable);
+    }
+    let installed = Command::new(&python)
+        .args([
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "numpy>=1.26,<3",
+        ])
+        .current_dir(home)
+        .output()
+        .map_err(|_| FingerprintUnavailable)?;
+    if !installed.status.success() {
+        let _ = fs::remove_dir_all(&venv);
+        return Err(FingerprintUnavailable);
+    }
+    let verified = Command::new(&python)
+        .args([
+            "-c",
+            "from challenge_suite import fingerprint_suite; from fingerprint import load_bank; assert len(fingerprint_suite()) >= 3; assert load_bank()",
+        ])
+        .current_dir(home)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .map_err(|_| FingerprintUnavailable)?;
+    if !verified.status.success() {
+        let _ = fs::remove_dir_all(&venv);
+        return Err(FingerprintUnavailable);
+    }
+    fs::write(ready, b"ready\n").map_err(|_| FingerprintUnavailable)?;
+    Ok(python)
 }
 
 #[async_trait]

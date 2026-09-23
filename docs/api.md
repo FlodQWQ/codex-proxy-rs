@@ -686,8 +686,9 @@ OAuth 等待回调期间不持有保护；提交仍拒绝已删除或连接配�
 无法比较、回答不足或置信度不足时返回 `inconclusive`，不改变降智状态。高置信结果使用现有模型降智观测投影，标记在三小时后到期，
 并显示请求模型、推断模型及检测时间。原始回答仅在当前请求期间用于归因，不保存为使用记录或日志。ModelTrace 是候选库内的归因估计，不能单独证明模型能力。
 
-ModelTrace checkout 和本地指纹库位于 VPS 的 `.runtime/data/modeltrace`，不开放独立公网服务。新版本 CPR 镜像需包含 Python 3；
-在仓库目录运行 `deploy/install-modeltrace.sh` clone 固定版本并安装分析器依赖。
+ModelTrace checkout 位于 VPS 的 `runtime_data_dir/modeltrace`（默认 `.runtime/data/modeltrace`），不开放独立公网服务。
+`v3.13.1-Flod-fork.3` 网页更新包会随应用安装固定题库；首次打开指纹检测时，在本机 Python 虚拟环境中安装 NumPy。
+手动部署可运行 `deploy/install-modeltrace.sh` 完成 clone 和依赖安装。
 
 ### 后台导入任务
 

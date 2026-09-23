@@ -8,7 +8,9 @@ revision="55a2e4a55170423b484d701e9a82ab62b268c811"
 
 cd "$repo_root"
 if [[ -d "$target/.git" ]]; then
-  if [[ -n "$(git -C "$target" status --porcelain)" ]]; then
+  tracked_changes=$(git -C "$target" status --porcelain --untracked-files=no)
+  other_untracked=$(git -C "$target" ls-files --others --exclude-standard | awk '$0 !~ /^\.venv(\/|$)/')
+  if [[ -n "$tracked_changes" || -n "$other_untracked" ]]; then
     printf 'ModelTrace checkout has local changes: %s\n' "$target" >&2
     exit 1
   fi
@@ -27,6 +29,7 @@ if [[ "$(git -C "$target" rev-parse HEAD)" != "$revision" ]]; then
   printf 'ModelTrace revision did not match the pinned commit.\n' >&2
   exit 1
 fi
+printf '%s\n' "$revision" > "$target/.git/CPR_REVISION"
 test -s "$target/data/unified_bank.json"
 test -s "$target/challenge_suite.py"
 

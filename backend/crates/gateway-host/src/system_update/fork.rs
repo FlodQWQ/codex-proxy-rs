@@ -3,6 +3,7 @@
 use std::fs;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::archive::ExtractedRelease;
 use super::state::UpdateTempDir;
@@ -94,6 +95,79 @@ fn swap(current: &Path, replacement: &Path, directory: bool) -> io::Result<()> {
     }
 }
 
+const MODELTRACE_REVISION: &str = "55a2e4a55170423b484d701e9a82ab62b268c811";
+
+fn valid_modeltrace_tree(path: &Path) -> bool {
+    [
+        ".git/HEAD",
+        "challenge_suite.py",
+        "fingerprint.py",
+        "data/unified_bank.json",
+    ]
+    .iter()
+    .all(|file| path.join(file).is_file())
+}
+
+fn modeltrace_revision(path: &Path) -> Option<String> {
+    if let Ok(revision) = fs::read_to_string(path.join(".git/CPR_REVISION")) {
+        return Some(revision.trim().to_owned());
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_owned()
+    })
+}
+
+fn install_modeltrace(
+    runtime_data_dir: &Path,
+    source: &Path,
+) -> Result<(), OperationError> {
+    if !valid_modeltrace_tree(source)
+        || modeltrace_revision(source).as_deref() != Some(MODELTRACE_REVISION)
+    {
+        return Err(invalid("Release 缺少固定版本的 ModelTrace 指纹库"));
+    }
+    fs::create_dir_all(runtime_data_dir)
+        .map_err(|error| internal(format!("failed to prepare runtime data: {error}")))?;
+    let runtime_metadata = fs::symlink_metadata(runtime_data_dir)
+        .map_err(|error| internal(format!("failed to inspect runtime data: {error}")))?;
+    if runtime_metadata.file_type().is_symlink() || !runtime_metadata.is_dir() {
+        return Err(conflict("runtime data directory is not a regular directory"));
+    }
+
+    let target = runtime_data_dir.join("modeltrace");
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink()
+                || !metadata.is_dir()
+                || !valid_modeltrace_tree(&target)
+                || modeltrace_revision(&target).as_deref() != Some(MODELTRACE_REVISION)
+            {
+                return Err(conflict(
+                    "ModelTrace directory already exists with unexpected content; it was not overwritten",
+                ));
+            }
+            return Ok(());
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(internal(format!("failed to inspect ModelTrace: {error}"))),
+    }
+
+    let stage = UpdateTempDir::create(runtime_data_dir)?;
+    let staged_modeltrace = stage.path().join("modeltrace");
+    copy_dir_all(source, &staged_modeltrace)
+        .map_err(|error| internal(format!("failed to stage ModelTrace checkout: {error}")))?;
+    fs::rename(&staged_modeltrace, &target)
+        .map_err(|error| internal(format!("failed to install ModelTrace checkout: {error}")))
+}
+
 pub(super) fn install(
     config: &SystemUpdateConfig,
     extracted: ExtractedRelease,
@@ -120,9 +194,19 @@ pub(super) fn install(
     let web = extracted
         .web_dist_dir
         .ok_or_else(|| invalid("定制包缺少前端"))?;
+    let modeltrace = extracted
+        .modeltrace_dir
+        .ok_or_else(|| invalid("定制包缺少 ModelTrace 指纹库"))?;
     if !web.join("index.html").is_file() {
         return Err(invalid("定制包缺少 index.html"));
     }
+    install_modeltrace(
+        config
+            .runtime_data_dir
+            .as_deref()
+            .ok_or_else(|| conflict("runtime data directory is not configured"))?,
+        &modeltrace,
+    )?;
 
     // 在部署所在文件系统准备完整新包，再交换，避免跨文件系统复制发生在替换期间。
     let stage = UpdateTempDir::create(root)?;

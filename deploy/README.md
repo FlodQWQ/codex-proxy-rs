@@ -101,14 +101,18 @@ curl -i http://127.0.0.1:8080/healthz
 
 ## ModelTrace 指纹检测
 
-指纹库保存在 CPR 安装目录的 `.runtime/data/modeltrace`，不单独开放端口。在运行 CPR 的仓库或安装目录运行：
+指纹库保存在 CPR 的 `runtime_data_dir/modeltrace`（默认 `.runtime/data/modeltrace`），不单独开放端口。
+`v3.13.1-Flod-fork.3` 的网页更新包携带固定 commit 的本地 checkout，并仅在目标目录缺失时安装；已有内容不会被覆盖。
+首次打开“检测指纹”时，会在 VPS 本机创建 Python 虚拟环境并安装 NumPy，第一次加载可能需要一些时间。
+宿主机部署需要可用的 Python 3、`venv` 和 pip；Compose 新镜像包含 Python 3 和 `venv`。
+
+手动部署或修复环境时，在运行 CPR 的仓库或安装目录运行：
 
 ```bash
 bash deploy/install-modeltrace.sh
 ```
 
-脚本会 clone 并固定到已验证的 ModelTrace commit，安装 NumPy 并校验题库。systemd 部署使用宿主机 Python 3，Compose 部署使用 CPR 容器 Python 3。
-更新 CPR 运行环境后，如需重建分析环境可再次运行；若 checkout 有本地改动，脚本会停止而不覆盖。
+脚本会 clone 并固定到已验证的 ModelTrace commit，安装 NumPy 并校验题库；若 checkout 有本地改动（虚拟环境除外），脚本会停止而不覆盖。
 
 账号管理中的“检测指纹”只对 OpenAI 账号开放。一次检测最多向所选账号发送六条固定挑战，消耗对应上游额度；达到三条有效回答和 70% 置信度后，才使用账号现有的三小时降智标记逻辑。原始回答不会作为使用记录保存。
 

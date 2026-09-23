@@ -14,6 +14,7 @@ const MAX_ARCHIVE_FILES: usize = 20_000;
 pub(crate) struct ExtractedRelease {
     pub(crate) binary_path: PathBuf,
     pub(crate) web_dist_dir: Option<PathBuf>,
+    pub(crate) modeltrace_dir: Option<PathBuf>,
     pub(crate) companions: Vec<PathBuf>,
 }
 
@@ -27,8 +28,10 @@ pub(crate) fn extract_release(
     let mut archive = tar::Archive::new(decoder);
     let binary_path = temp_dir.join(APP_BINARY_NAME);
     let web_dist_dir = temp_dir.join("web-dist");
+    let modeltrace_dir = temp_dir.join("modeltrace");
     let mut found_binary = false;
     let mut found_web = false;
+    let mut found_modeltrace = false;
     let mut extracted_size = 0_u64;
     let mut file_count = 0_usize;
     let mut companions = Vec::new();
@@ -86,6 +89,25 @@ pub(crate) fn extract_release(
             found_binary = true;
             continue;
         }
+        if let Some(relative) = modeltrace_relative_path(&path) {
+            if relative.as_os_str().is_empty() {
+                continue;
+            }
+            let target = modeltrace_dir.join(relative);
+            if !destinations.insert(target.clone()) {
+                return Err(invalid("release archive contains duplicate ModelTrace files"));
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    internal(format!("failed to create ModelTrace directory: {error}"))
+                })?;
+            }
+            entry
+                .unpack(&target)
+                .map_err(|error| internal(format!("failed to extract ModelTrace file: {error}")))?;
+            found_modeltrace = true;
+            continue;
+        }
         if let Some(relative) = web_dist_relative_path(&path) {
             if relative.as_os_str().is_empty() {
                 continue;
@@ -117,6 +139,7 @@ pub(crate) fn extract_release(
     Ok(ExtractedRelease {
         binary_path,
         web_dist_dir: found_web.then_some(web_dist_dir),
+        modeltrace_dir: found_modeltrace.then_some(modeltrace_dir),
         companions,
     })
 }
@@ -129,6 +152,18 @@ fn unsafe_archive_path(path: &Path) -> bool {
                 Component::ParentDir | Component::Prefix(_) | Component::RootDir
             )
         })
+}
+
+fn modeltrace_relative_path(path: &Path) -> Option<PathBuf> {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_os_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (components.first().is_some_and(|value| value == "modeltrace"))
+        .then(|| components[1..].iter().collect())
 }
 
 fn web_dist_relative_path(path: &Path) -> Option<PathBuf> {

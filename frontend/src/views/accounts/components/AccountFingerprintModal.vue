@@ -121,7 +121,7 @@ function confidence(value: number | null) {
     <div class="grid gap-4">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <p class="m-0 text-cp-sm text-cp-text-secondary">
-          3 条有效回答 · 置信度至少 70%
+          {{ loading ? '正在加载账号和本地指纹库（首次可能需要几分钟）…' : '3 条有效回答 · 置信度至少 70%' }}
         </p>
         <BaseButton variant="secondary" :disabled="loading || running" @click="load()">
           <RefreshCw class="size-4" :class="loading ? 'animate-spin motion-reduce:animate-none' : ''" />刷新列表

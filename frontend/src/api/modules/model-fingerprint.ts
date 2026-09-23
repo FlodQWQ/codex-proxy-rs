@@ -21,6 +21,7 @@ export function getFingerprintModels(options?: RequestOptions) {
   return request<{ models: ModelFingerprintModel[] }>({
     url: '/api/admin/accounts/fingerprint/models',
     method: 'GET',
+    timeout: 600_000,
     ...options,
   })
 }

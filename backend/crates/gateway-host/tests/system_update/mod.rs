@@ -147,6 +147,13 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
         "new-web"
     );
     assert!(
+        fixture
+            .root
+            .path()
+            .join("runtime-data/modeltrace/data/unified_bank.json")
+            .is_file()
+    );
+    assert!(
         service
             .perform_update(Some("3.12.1-fork.3".to_owned()))
             .await
@@ -154,6 +161,13 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
     );
     service.rollback().await.expect("whole bundle rollback");
     assert_fork_unchanged(&fixture);
+    assert!(
+        fixture
+            .root
+            .path()
+            .join("runtime-data/modeltrace/data/unified_bank.json")
+            .is_file()
+    );
 }
 
 #[tokio::test]
@@ -166,6 +180,8 @@ async fn fork_update_should_reject_bad_bundles_before_replacing_files() {
         "duplicate",
         "missing",
         "web",
+        "modeltrace",
+        "modeltrace_revision",
         "symlink",
     ] {
         let fixture = Fixture::new();
@@ -234,6 +250,8 @@ async fn mount_fork(fixture: &Fixture, server: &MockServer, failure: &str) -> Sy
     let mut config = fixture.config(&format!("{}/repos", server.uri()));
     config.version = "3.12.1-fork.1".to_owned();
     config.update_repository = Some("FlodQWQ/codex-proxy-rs".to_owned());
+    let runtime_data_dir = fixture.root.path().join("runtime-data");
+    config.runtime_data_dir = Some(runtime_data_dir.clone());
     let mut tar = Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
     let elf = fork_elf();
     append_file(&mut tar, "./codex-proxy-rs", &elf, false);
@@ -265,6 +283,27 @@ async fn mount_fork(fixture: &Fixture, server: &MockServer, failure: &str) -> Sy
         },
         false,
     );
+    if failure != "modeltrace" {
+        append_file(
+            &mut tar,
+            "./modeltrace/.git/CPR_REVISION",
+            if failure == "modeltrace_revision" {
+                b"bad"
+            } else {
+                b"55a2e4a55170423b484d701e9a82ab62b268c811\n"
+            },
+            false,
+        );
+        append_file(&mut tar, "./modeltrace/.git/HEAD", b"ref: refs/heads/main\n", false);
+        append_file(&mut tar, "./modeltrace/challenge_suite.py", b"", false);
+        append_file(&mut tar, "./modeltrace/fingerprint.py", b"", false);
+        append_file(
+            &mut tar,
+            "./modeltrace/data/unified_bank.json",
+            b"{}",
+            false,
+        );
+    }
     if failure != "web" {
         append_file(&mut tar, "./web/dist/index.html", b"new-web", false);
     }
@@ -1834,6 +1873,7 @@ impl Fixture {
             update_state_file: self.state(),
             update_lock_file: self.lock(),
             update_temp_dir: self.root.path().join("tmp"),
+            runtime_data_dir: Some(self.root.path().join("runtime-data")),
             self_restart_enabled: false,
         }
     }

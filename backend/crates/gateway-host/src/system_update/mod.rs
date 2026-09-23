@@ -63,6 +63,7 @@ pub struct SystemUpdateConfig {
     pub update_repository: Option<String>,
     pub github_api_base: String,
     pub executable_path: Option<PathBuf>,
+    pub runtime_data_dir: Option<PathBuf>,
     /// 未显式指定时，由组合根传入 API 实际使用的静态资源目录。
     pub web_dist_dir: Option<PathBuf>,
     pub update_state_file: PathBuf,
@@ -107,6 +108,7 @@ impl Default for SystemUpdateConfig {
             github_api_base: environment_value("CPR_GITHUB_API_BASE")
                 .unwrap_or_else(|| DEFAULT_GITHUB_API_BASE.to_owned()),
             executable_path,
+            runtime_data_dir: None,
             web_dist_dir: None,
             update_state_file,
             update_lock_file,
@@ -124,6 +126,7 @@ impl SystemUpdateConfig {
         runtime_data_dir: &Path,
         asset_directory: &Path,
     ) -> Result<(), ConfigError> {
+        self.runtime_data_dir = Some(runtime_data_dir.to_path_buf());
         let web_dist_dir = self
             .web_dist_dir
             .get_or_insert_with(|| asset_directory.to_path_buf());
@@ -433,7 +436,17 @@ impl ProcessSystemOperations {
         self.events
             .info(Some(operation_id), Some("replace"), "正在替换应用文件");
         if is_fork {
+            self.events.info(
+                Some(operation_id),
+                Some("modeltrace"),
+                "正在安装本地 ModelTrace 指纹库",
+            );
             fork::install(&self.config, extracted, version)?;
+            self.events.success(
+                Some(operation_id),
+                Some("modeltrace"),
+                "本地 ModelTrace 指纹库已就绪",
+            );
         } else {
             replace_release_files(
                 &self.config.executable_path()?,
