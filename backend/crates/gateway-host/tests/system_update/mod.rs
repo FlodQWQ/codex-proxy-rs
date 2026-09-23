@@ -28,12 +28,15 @@ async fn fork_checks_should_use_only_fork_releases() {
     for (target, allowed) in [
         ("3.12.1-fork.2", true),
         ("3.13.0-fork.3", true),
+        ("3.13.1-Flod-fork.1", true),
         ("3.12.1-fork.1", false),
         ("3.11.0-fork.99", false),
         ("3.12.1", false),
         ("3.13.0-beta.1", false),
         ("4.0.0-fork.3", false),
         ("3.13.0-fork.0", false),
+        ("3.13.1-Flod-fork.0", false),
+        ("3.13.1-other-fork.1", false),
     ] {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -68,6 +71,36 @@ async fn fork_checks_should_use_only_fork_releases() {
             b"old-binary"
         );
         assert!(!fixture.state().exists());
+    }
+}
+
+#[tokio::test]
+async fn flod_fork_checks_should_stay_on_the_fork_release_line() {
+    for (target, allowed) in [
+        ("3.13.1-Flod-fork.2", true),
+        ("3.13.1-Flod-fork.1", false),
+        ("3.13.1-fork.21", false),
+        ("3.13.1", false),
+        ("4.0.0-Flod-fork.1", false),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/FlodQWQ/codex-proxy-rs/releases"))
+            .respond_with(release_response(target, vec![]))
+            .mount(&server)
+            .await;
+        let fixture = Fixture::new();
+        let mut config = fixture.config(&format!("{}/repos", server.uri()));
+        config.version = "3.13.1-Flod-fork.1".to_owned();
+        config.update_repository = Some("FlodQWQ/codex-proxy-rs".to_owned());
+        let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+        let detail = service.update_detail(true).await.expect("fork check");
+        assert_eq!(detail.has_update, allowed, "{target}");
+        assert!(detail.update_supported);
+        assert_eq!(
+            service.version().await.expect("version").update_channel,
+            "fork"
+        );
     }
 }
 

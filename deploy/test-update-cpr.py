@@ -20,7 +20,7 @@ class ManualUpdaterTests(unittest.TestCase):
                 'codex-proxy-rs': ELF,
                 'codex-ticket-probe': ELF,
                 'web/dist/index.html': b'web',
-                'VERSION': b'3.12.1-fork.20\n',
+                'VERSION': b'3.13.1-Flod-fork.1\n',
                 'REVISION': b'a' * 40 + b'\n',
             }
             if change:
@@ -66,6 +66,9 @@ class ManualUpdaterTests(unittest.TestCase):
 
     def test_official_version_is_rejected(self):
         self.assertNotEqual(self.check_package(lambda files: files.update(VERSION=b'3.12.1')).returncode, 0)
+
+    def test_legacy_fork_version_is_rejected(self):
+        self.assertNotEqual(self.check_package(lambda files: files.update(VERSION=b'3.12.1-fork.20')).returncode, 0)
 
     def test_wrong_architecture_is_rejected(self):
         self.assertNotEqual(self.check_package(lambda files: files.update({'codex-proxy-rs': b'not ELF'})).returncode, 0)

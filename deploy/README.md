@@ -135,6 +135,8 @@ SSE 注释保活用于防止传输链路空闲断开，不会重置 Codex 等待
 
 在管理端创建客户端密钥，打开「使用密钥」，按操作系统复制 `config.toml` 和 `auth.json`，
 或通过 CCSwitch 导入。已有文件先备份，合并后完全退出并重启 Codex。
+CCSwitch 导入同时配置当前 Key 的日／周额度查询，当前 Provider 默认每 30 分钟刷新。
+查询地址和凭据随导入生成，在 CCSwitch 中修改 Provider 的地址或 Key 后，需重新导入以同步用量查询。
 
 Linux/macOS 默认目录为 `~/.codex/`，Windows 为 `%USERPROFILE%\.codex\`；
 设置过 `CODEX_HOME` 时以该目录为准。Provider 设置应写入用户配置，不要只写到项目目录。
@@ -428,7 +430,7 @@ alpha、beta、rc、exp 在 GitHub 标记为 Pre-release，不覆盖 GitHub Late
 Compose 提供以下在线更新运行参数：
 
 - `CPR_UPDATE_REPOSITORY`：只接受 `owner/repository`；本 fork 默认 `FlodQWQ/codex-proxy-rs`。
-  `cpr-custom` 使用隔离的 `fork.N` 检查通道及手动安装脚本，详见 [定制分支更新](FORK-UPDATES.md)。
+  `cpr-custom` 使用隔离的 `Flod-fork.N` 检查通道及手动安装脚本，详见 [定制分支更新](FORK-UPDATES.md)。
 - `CPR_GITHUB_API_BASE`：正式环境必须为 `https://api.github.com/repos`。
 - `CPR_UPDATE_EXE_PATH`、`CPR_WEB_DIST_DIR`：分别指向容器内二进制和前端静态目录；
   `CPR_WEB_DIST_DIR` 同时供页面服务与更新器使用，相对路径以 `deploy/config.yaml` 所在目录为基准。

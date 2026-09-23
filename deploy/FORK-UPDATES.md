@@ -7,10 +7,12 @@
 
 `Fork Build` 对定制分支构建 Linux amd64 / Debian 12 兼容包，运行前端检查、
 Host 更新器测试、OpenAI Provider 测试（含调度、额度和打票）、手动脚本校验测试和 Go 探针测试。成功后发布到本 fork 的 GitHub Releases。
-版本为 `上游版本-fork.N`，N 使用工作流运行编号。发布仅来自 `cpr-custom`，标为
+从上游 v3.13.1 起版本为 `上游版本-Flod-fork.N`，N 在 Fork Build 工作流中显式递增；旧版本为
+`上游版本-fork.N`，N 使用工作流运行编号。发布仅来自 `cpr-custom`，标为
 Pre-release，不覆盖 GitHub Latest，也不发布或覆盖 Docker 镜像。
 
-程序只从本 fork 检查更高的 `fork.N` 版本，同一大版本内可随上游提升小版本。
+程序只从本 fork 检查更高的定制版本，同一大版本内可随上游提升小版本；
+`Flod-fork.N` 不回退到旧 `fork.N` 命名。
 不会切换到官方、alpha/beta/rc/exp 通道，不接受降级或跨大版本更新。
 检查失败与无更新分开报告。Linux x86_64 二进制部署支持网页“立即更新”，
 下载完整归档并校验 SHA256SUMS、VERSION、REVISION、主程序和探针平台后，
@@ -28,7 +30,8 @@ Pre-release，不覆盖 GitHub Latest，也不发布或覆盖 Docker 镜像。
 更早备份和失败现场保留在 `.codex-proxy-rs-update-*`，不自动清理。
 手动安装与在线更新不能并发进行。升级前仍应备份数据库。
 
-旧的 `fork.<提交号>` 构建不支持该检查通道；尚未支持在线安装的版本第一次也必须手动更新。
+旧的 `fork.<提交号>` 构建不支持该检查通道。旧 `fork.N` 更新器不认识新 `Flod-fork.N` 命名，
+升级至 v3.13.1-Flod-fork.1 时必须使用新 Release 的附件手动安装一次，之后可继续在线更新。
 程序、脚本和发布机制的变更只有在安装新包后才对运行中的服务生效。
 
 ## 手动安装
@@ -78,7 +81,9 @@ sudo bash update-cpr.sh --apply codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS
 `/opt/codex-proxy-rs/.update-stage-*`，不自动清理。脚本不会覆盖 `deploy/config.yaml`、
 `.runtime`、账号数据或数据库，也不执行数据库恢复。
 更新前请自行备份数据库；程序启动时仍可能执行其自带数据库迁移，文件回滚不等于数据库回滚。
-从 v3.11.0 到当前 v3.12.1 没有新增 SQL 迁移。
+从 v3.12.1-fork.20 升级至 v3.13.1-Flod-fork.1 会执行上游新增的
+`0017_unlimited_default_account_concurrency.sql`，仅放宽默认账号并发上限约束；
+手动回滚程序文件不会回滚数据库，请在安装前备份数据库。
 
 ## 配置兼容
 

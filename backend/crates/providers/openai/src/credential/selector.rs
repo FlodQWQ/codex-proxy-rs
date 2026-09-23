@@ -42,6 +42,7 @@ const CLOUDFLARE_CHALLENGE_BACKOFF: [Duration; 4] = [
 const CLOUDFLARE_PATH_BLOCK_THRESHOLD: u32 = 3;
 const SESSION_AFFINITY_TIMEOUT: Duration = Duration::from_millis(100);
 const CYBER_POLICY_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
+const MAX_ACCOUNT_SNAPSHOT_RETRIES: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexAccountFailure {
@@ -356,6 +357,7 @@ impl CodexCredentialSelector {
             request.attempt.deadline(),
             request.attempt.concurrency_wait_budget(),
         );
+        let mut snapshot_retries = 0;
         'capacity: loop {
             let diagnostic = request.attempt.is_diagnostic_required_account();
             let mut accounts = self.repository.list_for_provider().await?;
@@ -407,7 +409,18 @@ impl CodexCredentialSelector {
                 if request.requires_websocket
                     && account.authentication_kind() == super::CODEX_AUTHENTICATION_KIND_API_KEY
                 {
-                    let runtime = self.repository.load_runtime_credential(&account).await?;
+                    let runtime = match self.repository.load_runtime_credential(&account).await {
+                        Ok(runtime) => runtime,
+                        Err(CredentialRepositoryError::RevisionConflict) => {
+                            retry_account_snapshot(
+                                request.attempt,
+                                &account,
+                                &mut snapshot_retries,
+                            )?;
+                            continue 'capacity;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
                     if !matches!(runtime.authentication, CodexRuntimeAuthentication::ApiKey(ref auth)
                         if auth.configuration.transport == super::ApiKeyTransport::PreferWebsocket)
                     {
@@ -669,6 +682,16 @@ impl CodexCredentialSelector {
                     .find(|candidate| candidate.account.id() == selected.account.id())
                     .map(|candidate| candidate.account.clone())
                     .ok_or(CredentialSelectionError::InvalidCredential)?;
+                // 额度观测等并发更新会使整个账号快照失效，必须重新选号并校验资格。
+                // 在占用租约和请求间隔前完成校验，避免重读被自己的异步释放挡住。
+                let runtime = match self.repository.load_runtime_credential(&account).await {
+                    Ok(runtime) => runtime,
+                    Err(CredentialRepositoryError::RevisionConflict) => {
+                        retry_account_snapshot(request.attempt, &account, &mut snapshot_retries)?;
+                        continue 'capacity;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 let allows_account_state_mutation = !diagnostic || account.enabled();
                 match self
                     .leases
@@ -750,7 +773,6 @@ impl CodexCredentialSelector {
                                 .is_some_and(CodexSessionAffinity::session_id_present),
                             "OpenAI account selected"
                         );
-                        let runtime = self.repository.load_runtime_credential(&account).await?;
                         let cookies = runtime
                             .cookies
                             .into_iter()
@@ -1468,6 +1490,32 @@ impl fmt::Debug for CodexCredentialLease {
     }
 }
 
+fn retry_account_snapshot(
+    attempt: &AttemptContext,
+    account: &ProviderAccount,
+    retries: &mut u32,
+) -> Result<(), CredentialSelectionError> {
+    let retry = *retries < MAX_ACCOUNT_SNAPSHOT_RETRIES;
+    if retry {
+        *retries += 1;
+    }
+    attempt.trace().record(
+        "account.snapshot_conflict",
+        serde_json::json!({
+            "accountId": account.id().as_str(),
+            "credentialRevision": account.revision().get(),
+            "retry": retry,
+            "retryCount": *retries,
+            "maxRetries": MAX_ACCOUNT_SNAPSHOT_RETRIES,
+        }),
+    );
+    if retry {
+        Ok(())
+    } else {
+        Err(CredentialSelectionError::AccountSnapshotChanged)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum CredentialSelectionError {
     #[error(transparent)]
@@ -1480,6 +1528,8 @@ pub enum CredentialSelectionError {
     CapacityUnavailable { retry_after: Option<Duration> },
     #[error("Codex account data is invalid")]
     InvalidCredential,
+    #[error("Codex account changed repeatedly during selection")]
+    AccountSnapshotChanged,
     #[error("Codex account store is unavailable")]
     Store,
     #[error("Codex account lease runtime is unavailable")]

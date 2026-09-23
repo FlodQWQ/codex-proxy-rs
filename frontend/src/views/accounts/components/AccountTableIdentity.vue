@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AccountRow } from '../constants'
-import { useNow } from '@vueuse/core'
+import { useIntervalFn, useNow } from '@vueuse/core'
 import { computed } from 'vue'
 import { accountTableName, accountTableNotes } from '../utils/tableIdentity'
 
@@ -8,7 +8,7 @@ const props = defineProps<{ account: AccountRow }>()
 const emit = defineEmits<{ edit: [account: AccountRow] }>()
 const title = computed(() => accountTableName(props.account))
 const notes = computed(() => accountTableNotes(props.account))
-const now = useNow({ interval: 1000 })
+const now = useNow({ scheduler: callback => useIntervalFn(callback, 1000) })
 const markers = computed(() => (props.account.modelDegradation ?? []).filter(item => Date.parse(item.expiresAt) > now.value.getTime()))
 const degraded = computed(() => markers.value.some(item => item.status === 'degraded'))
 const degradationTitle = computed(() => markers.value.map(item =>

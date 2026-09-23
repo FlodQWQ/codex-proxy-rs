@@ -50,8 +50,8 @@ with tarfile.open(archive, 'r:gz') as package:
             raise SystemExit('归档缺少必要文件：' + name)
     version = package.extractfile(members['VERSION']).read(200).decode().strip()
     revision = package.extractfile(members['REVISION']).read(200).decode().strip()
-    if not re.fullmatch(r'3\.\d+\.\d+-fork\.[1-9]\d*', version):
-        raise SystemExit('只接受 v3 fork.N 产物')
+    if not re.fullmatch(r'3\.\d+\.\d+-Flod-fork\.[1-9]\d*', version):
+        raise SystemExit('只接受 v3 Flod-fork.N 产物')
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise SystemExit('提交号无效')
     for name in ('codex-proxy-rs', 'codex-ticket-probe'):
@@ -102,11 +102,13 @@ for item in "${targets[@]}"; do [[ ! -L "$app/$item" ]] || exit 1; done
 if [[ -f "$app/VERSION" ]]; then
   python3 - "$app/VERSION" "$version" <<'PY'
 import pathlib, re, sys
-pattern = r'(3)\.(\d+)\.(\d+)-fork\.([1-9]\d*)'
-old = re.fullmatch(pattern, pathlib.Path(sys.argv[1]).read_text().strip())
-new = re.fullmatch(pattern, sys.argv[2])
-if old and tuple(map(int, new.groups())) <= tuple(map(int, old.groups())):
-    raise SystemExit('拒绝降级或重复安装')
+old = re.fullmatch(r'(3)\.(\d+)\.(\d+)-(fork|Flod-fork)\.([1-9]\d*)', pathlib.Path(sys.argv[1]).read_text().strip())
+new = re.fullmatch(r'(3)\.(\d+)\.(\d+)-Flod-fork\.([1-9]\d*)', sys.argv[2])
+if old:
+    old_core = tuple(map(int, old.group(1, 2, 3)))
+    new_core = tuple(map(int, new.group(1, 2, 3)))
+    if new_core < old_core or (new_core == old_core and (old.group(4) == 'fork' or int(new.group(4)) <= int(old.group(5)))):
+        raise SystemExit('拒绝降级或重复安装')
 PY
 fi
 

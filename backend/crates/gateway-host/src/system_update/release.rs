@@ -369,7 +369,7 @@ fn channel_for_version(version: &semver::Version) -> Option<UpdateChannel> {
         "beta" => Some(UpdateChannel::Beta),
         "rc" => Some(UpdateChannel::Rc),
         "exp" => Some(UpdateChannel::Experimental),
-        "fork" => Some(UpdateChannel::Fork),
+        "fork" | "Flod-fork" => Some(UpdateChannel::Fork),
         _ => None,
     }
 }
@@ -393,7 +393,10 @@ fn update_target_allowed(current: &semver::Version, target: &semver::Version) ->
     };
     // 定制通道允许跟随上游的小版本，但绝不切换到官方或其他预发行通道。
     if current_channel == Fork || target_channel == Fork {
-        return current_channel == Fork && target_channel == Fork;
+        return current_channel == Fork
+            && target_channel == Fork
+            && (current.pre.as_str().starts_with("fork.")
+                || target.pre.as_str().starts_with("Flod-fork."));
     }
     if current_channel == Stable {
         return target_channel == Stable;

@@ -21,6 +21,9 @@ concurrency:
   group: fork-build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORK_RELEASE_SEQUENCE: '1'
+
 jobs:
   linux-amd64:
     runs-on: ubuntu-24.04
@@ -88,7 +91,7 @@ jobs:
         run: |
           mkdir -p "$HOME/.cargo" dist/web
           version=$(ruby -ryaml -e 'puts YAML.load_file("release/version.yaml").fetch("version").delete_prefix("v")')
-          version="${version}-fork.${GITHUB_RUN_NUMBER}"
+          version="${version}-Flod-fork.${FORK_RELEASE_SEQUENCE}"
           echo "FORK_VERSION=$version" >> "$GITHUB_ENV"
           docker run --rm --network host --user "$(id -u):$(id -g)" \
             -e CARGO_HOME=/cargo -e HOME=/tmp \

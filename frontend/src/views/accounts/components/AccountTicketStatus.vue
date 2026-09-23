@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import type { TicketAccount, TicketModel } from '@/api/modules/codex-tickets'
 import { ChevronRight } from '@lucide/vue'
-import { useNow } from '@vueuse/core'
+import { useIntervalFn, useNow } from '@vueuse/core'
 import { computed, ref } from 'vue'
 import BaseModal from '@/components/base/BaseModal/index.vue'
 
 const props = defineProps<{ account: TicketAccount, enabled: boolean, error: boolean }>()
-const now = useNow({ interval: 1000 })
+const now = useNow({ scheduler: callback => useIntervalFn(callback, 1000) })
 const open = ref(false)
 const selectedModel = ref('')
 const selected = computed(() => props.account.models.find(model => model.model === selectedModel.value))
