@@ -470,7 +470,12 @@ impl AccountStore for PgAdminAccountStore {
         .bind(observation.observed_at)
         .execute(&self.pool)
         .await
-        .map_err(|error| admin_store_error(ENTITY, error))?;
+        .map_err(|_| {
+            admin_store_error(
+                ENTITY,
+                postgres_unavailable("prune model fingerprint observations"),
+            )
+        })?;
         sqlx::query(
             "insert into provider_account_fingerprint_observations
                 (id, provider_account_ref, sent_model, response_model, observed_at)
@@ -483,7 +488,12 @@ impl AccountStore for PgAdminAccountStore {
         .bind(observation.observed_at)
         .execute(&self.pool)
         .await
-        .map_err(|error| admin_store_error(ENTITY, error))?;
+        .map_err(|_| {
+            admin_store_error(
+                ENTITY,
+                postgres_unavailable("record model fingerprint observation"),
+            )
+        })?;
         Ok(())
     }
 
