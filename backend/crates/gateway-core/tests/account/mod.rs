@@ -253,7 +253,7 @@ fn diagnostic_selection_bypasses_all_local_account_eligibility() {
         AccountSelector
             .select(std::slice::from_ref(&exhausted), &context)
             .map(|selection| selection.candidate().account.id()),
-        Some(exhausted.account.id())
+        None
     );
     assert_eq!(
         AccountSelector

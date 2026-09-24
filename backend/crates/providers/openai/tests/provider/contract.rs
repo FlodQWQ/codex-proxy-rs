@@ -7989,7 +7989,7 @@ async fn disabled_account_diagnostic_uses_upstream_without_persisting_account_st
 }
 
 #[tokio::test]
-async fn quota_limited_account_diagnostic_uses_upstream() {
+async fn quota_limited_account_diagnostic_skips_upstream() {
     let store = Arc::new(MemoryAccountStore::default());
     let account_id = "acct_quota_limited_diagnostic";
     create_account(&store, account_id).await;
@@ -8032,7 +8032,7 @@ async fn quota_limited_account_diagnostic_uses_upstream() {
                     "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_quota_limited_diagnostic\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
                 )),
         )
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
     let (provider, quota) = provider_and_quota_with_affinity_and_base_url_and_leases(
@@ -8046,28 +8046,22 @@ async fn quota_limited_account_diagnostic_uses_upstream() {
         .prepare_scheduling(std::slice::from_ref(&account))
         .await;
 
-    let mut stream = provider
+    let error = match provider
         .execute(
             planned_request("openai", http_generate_operation()),
             diagnostic_context("req_quota_limited_diagnostic", account_id),
         )
         .await
-        .expect("quota-limited diagnostic should prepare a fixed-account stream");
-    let mut completed = false;
-    while let Some(event) = stream.next().await {
-        let event = event.expect("quota-limited diagnostic upstream response");
-        completed |= event
-            .canonical_facts()
-            .iter()
-            .any(|event| matches!(event, GatewayEvent::Completed(_)));
-    }
-
-    assert!(completed);
+    {
+        Ok(_) => panic!("quota-limited diagnostic should skip the exhausted account"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), ProviderErrorKind::NoEligibleAccount);
     let requests = server
         .received_requests()
         .await
-        .expect("captured quota-limited diagnostic request");
-    assert_eq!(requests.len(), 1);
+        .expect("captured quota-limited diagnostic requests");
+    assert!(requests.is_empty());
 }
 
 #[tokio::test]
