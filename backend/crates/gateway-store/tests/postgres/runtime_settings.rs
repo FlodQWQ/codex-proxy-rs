@@ -38,6 +38,9 @@ fn settings_with_margin(refresh_margin_seconds: u64) -> RuntimeSettingsUpdate {
         account_auto_freeze_probe_enabled: true,
         account_auto_freeze_probe_model: None,
         account_auto_freeze_adaptive_concurrency: true,
+        account_warmup_enabled: false,
+        account_warmup_schedule_time: "08:00".to_owned(),
+        account_warmup_model: None,
     }
 }
 
@@ -45,6 +48,52 @@ fn settings_with_margin(refresh_margin_seconds: u64) -> RuntimeSettingsUpdate {
 fn runtime_settings_keep_account_rotation_global() {
     let settings = settings_with_margin(3_600);
     assert!(settings.validate().is_ok());
+}
+
+#[test]
+fn runtime_settings_require_model_when_warmup_is_enabled() {
+    let settings = RuntimeSettingsUpdate {
+        account_warmup_enabled: true,
+        ..settings_with_margin(3_600)
+    };
+    assert!(settings.validate().is_err());
+}
+
+#[tokio::test]
+async fn warmup_settings_round_trip_with_database_constraint() {
+    let Some(database) = TestDatabase::create("warmup_settings").await else {
+        return;
+    };
+    let repository = PgRuntimeSettingsRepository::new(database.pool.clone());
+    let mut update = settings_with_margin(3_600);
+    update.account_warmup_enabled = true;
+    update.account_warmup_schedule_time = "08:00,13:00".to_owned();
+    update.account_warmup_model = Some("test-model".to_owned());
+    repository
+        .update_runtime_settings(update)
+        .await
+        .expect("save warmup settings");
+
+    let settings = repository
+        .load_runtime_settings()
+        .await
+        .expect("load warmup settings");
+    assert!(settings.account_warmup_enabled);
+    assert_eq!(settings.account_warmup_schedule_time, "08:00,13:00");
+    assert_eq!(settings.account_warmup_model.as_deref(), Some("test-model"));
+
+    let error = sqlx::query("update runtime_settings set account_warmup_model = null where id = 1")
+        .execute(&database.pool)
+        .await
+        .expect_err("enabled warmup requires a model");
+    assert_eq!(
+        error
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23514")
+    );
+    database.close().await;
 }
 
 #[tokio::test]
