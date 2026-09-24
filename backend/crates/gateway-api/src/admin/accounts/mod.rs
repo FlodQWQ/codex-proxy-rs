@@ -29,11 +29,11 @@ use gateway_admin::model::{
         AccountRefreshResult, AccountUsagePeriod, AuthorizationStarted, CompleteAuthorization,
         ConsumeProviderResetCredit, CredentialDeletion, CredentialDeletionResult,
         CredentialImportResult, CredentialMutation, CredentialMutationResult, ImportCredentials,
-        ProviderDocument, ProviderModels, ProviderProfileActivityInsights, ProviderProfileAvatar,
-        ProviderProfileDailyUsage, ProviderProfileInvocation, ProviderProfileStatistics,
-        ProviderProfileStatisticsSummary, ProviderQuota, ProviderQuotaWindow, ProviderResetCredit,
-        ProviderResetCreditResult, ProviderResetCredits, ProviderSubscription, RotateCredential,
-        StartAuthorization,
+        ProviderDocument, ProviderModelCatalogDocument, ProviderModels,
+        ProviderProfileActivityInsights, ProviderProfileAvatar, ProviderProfileDailyUsage,
+        ProviderProfileInvocation, ProviderProfileStatistics, ProviderProfileStatisticsSummary,
+        ProviderQuota, ProviderQuotaWindow, ProviderResetCredit, ProviderResetCreditResult,
+        ProviderResetCredits, ProviderSubscription, RotateCredential, StartAuthorization,
     },
 };
 use gateway_core::{

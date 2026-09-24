@@ -7,6 +7,7 @@ import { computed, ref, shallowReactive, watch } from 'vue'
 import {
   deleteAccounts,
   exportAccounts,
+  getAccountModelCatalog,
   recoverAccount,
   refreshAccount,
   refreshAccountQuota,
@@ -41,12 +42,14 @@ export function useAccountMutations(options: {
   const recoveringAccounts = useIdSet<string>()
   const refreshingAccounts = useIdSet<string>()
   const refreshingQuotaAccounts = useIdSet<string>()
+  const downloadingCatalogAccounts = useIdSet<string>()
   const deletingAccountAction = useAsyncAction()
   const batchDeletingAction = useAsyncAction()
   const exportingAccountsAction = useAsyncAction()
   const recoveringAccountIds = recoveringAccounts.ids
   const refreshingAccountIds = refreshingAccounts.ids
   const refreshingQuotaAccountIds = refreshingQuotaAccounts.ids
+  const downloadingCatalogAccountIds = downloadingCatalogAccounts.ids
   const deletingAccount = deletingAccountAction.loading
   const batchDeleting = batchDeletingAction.loading
   const exportingAccounts = exportingAccountsAction.loading
@@ -164,6 +167,19 @@ export function useAccountMutations(options: {
     )
   }
 
+  async function handleDownloadModelCatalog(account: AccountRow) {
+    await downloadingCatalogAccounts.run(account.id, async () => {
+      try {
+        const result = await getAccountModelCatalog({ accountId: account.id })
+        const plan = account.planTypeDisplay.trim().replace(/[^\p{L}\p{N}_-]/gu, '_') || 'unknown-plan'
+        const name = account.name.trim().replace(/[^\p{L}\p{N}_-]/gu, '_') || 'account'
+        await downloadJson(result.catalog, `cpr-model-catalog-${plan}-${name}.json`)
+        toast.success(`已下载模型目录，共 ${result.modelCount} 个模型`)
+      }
+      catch {}
+    })
+  }
+
   async function handleRefresh(accountId: string) {
     await refreshingAccounts.run(accountId, async () => {
       try {
@@ -279,6 +295,7 @@ export function useAccountMutations(options: {
     recoveringAccountIds,
     refreshingAccountIds,
     refreshingQuotaAccountIds,
+    downloadingCatalogAccountIds,
     deletingAccount,
     batchDeleting,
     exportingAccounts,
@@ -287,6 +304,7 @@ export function useAccountMutations(options: {
     handleDelete,
     handleBatchDelete,
     handleExportAccounts,
+    handleDownloadModelCatalog,
     handleRecover,
     handleRefresh,
     handleRefreshQuota,

@@ -2,12 +2,13 @@
 import type { AccountRow } from '../constants'
 import { BaseIconButton, BaseMenuItem, BasePopover } from '@codex-proxy/ui'
 
-import { KeyRound, MoreHorizontal, Pencil, RefreshCw, RotateCcw, Trash2, Wifi } from '@lucide/vue'
+import { Download, KeyRound, MoreHorizontal, Pencil, RefreshCw, RotateCcw, Trash2, Wifi } from '@lucide/vue'
 import { computed } from 'vue'
 
 const props = defineProps<{
   account: AccountRow
   deleting: boolean
+  downloadingCatalog: boolean
   recovering: boolean
   refreshing: boolean
   testing: boolean
@@ -19,6 +20,7 @@ const emit = defineEmits<{
   test: [account: AccountRow]
   refresh: [accountId: string]
   reauthorize: [account: AccountRow]
+  downloadModelCatalog: [account: AccountRow]
 }>()
 
 const credentialEligible = computed(() => props.account.authenticationKind === 'oauth')
@@ -83,6 +85,20 @@ const credentialEligible = computed(() => props.account.authenticationKind === '
               <KeyRound class="size-3.5 text-cp-text-quaternary" />
             </template>
             重新授权
+          </BaseMenuItem>
+          <BaseMenuItem
+            v-if="account.provider === 'openai' && account.authenticationKind === 'oauth'"
+            :loading="downloadingCatalog"
+            :disabled="downloadingCatalog"
+            @click.stop="(close(), emit('downloadModelCatalog', account))"
+          >
+            <template #loading>
+              <RefreshCw class="size-3.5 animate-spin text-cp-text-quaternary motion-reduce:animate-none" />
+            </template>
+            <template #icon>
+              <Download class="size-3.5 text-cp-text-quaternary" />
+            </template>
+            下载模型目录
           </BaseMenuItem>
           <BaseMenuItem
             :loading="recovering"
