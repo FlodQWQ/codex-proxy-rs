@@ -13,14 +13,15 @@ import type {
 } from '@/api'
 
 import { Github } from '@boxicons/vue'
-import { BaseButton, BaseCheckbox, BaseForm, BaseFormItem, BaseInput, BaseModal, BaseSegmented, BaseSelect, BaseTag, toast } from '@codex-proxy/ui'
+import { BaseButton, BaseCheckbox, BaseForm, BaseFormItem, BaseInput, BaseModal, BaseSegmented, BaseTag, toast } from '@codex-proxy/ui'
 
 import { CheckCircle2, Download, FileArchive, Link, PackageOpen } from '@lucide/vue'
 import { useEventListener, useSessionStorage } from '@vueuse/core'
 import { isEqual } from 'es-toolkit'
 import { computed, nextTick, reactive, shallowRef, watch } from 'vue'
 import { formatDateTime } from '@/utils/date'
-import { normalizePluginRepository, pluginInstallSelectionKey } from '../utils/model'
+import { formatPluginFileSize, normalizePluginRepository, pluginInstallSelectionKey } from '../utils/model'
+import PluginAssetPicker from './PluginAssetPicker.vue'
 import PluginDownloadAuthentication from './PluginDownloadAuthentication.vue'
 import PluginHelpPopover from './PluginHelpPopover.vue'
 import PluginPermissionSummary from './PluginPermissionSummary.vue'
@@ -99,11 +100,7 @@ function changeMode(value: string) {
     return
   emit('changeMode', value)
 }
-const assetOptions = computed(() => (props.release?.assets ?? []).filter(asset => /\.(?:tar\.gz|tgz)$/i.test(asset.name)).map(asset => ({
-  label: `${asset.name} · ${formatFileSize(asset.size)}`,
-  value: asset.name,
-  description: asset.sha256 ? `SHA-256 ${asset.sha256}` : undefined,
-})))
+const releaseAssets = computed(() => (props.release?.assets ?? []).filter(asset => /\.(?:tar\.gz|tgz)$/i.test(asset.name)))
 const digestPattern = /^[a-f0-9]{64}$/
 const digestError = computed(() => {
   const digest = connectionForm.value.sha256.trim().toLowerCase()
@@ -381,14 +378,6 @@ function githubQueryKey() {
   })
 }
 
-function formatFileSize(bytes: number) {
-  if (bytes < 1024)
-    return `${bytes} B`
-  if (bytes < 1024 * 1024)
-    return `${(bytes / 1024).toFixed(1)} KiB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
-}
-
 watch(open, (isOpen) => {
   if (isOpen) {
     reset()
@@ -422,7 +411,7 @@ watch(
   () => props.release,
   async (release) => {
     // 唯一归档可直接解析，多个归档交给用户选择，平台兼容性仍由包检查器确认。
-    githubForm.asset = release && assetOptions.value.length === 1 ? assetOptions.value[0]!.value : ''
+    githubForm.asset = release && releaseAssets.value.length === 1 ? releaseAssets.value[0]!.name : ''
     if (githubForm.asset) {
       await nextTick()
       await verifySelected()
@@ -458,7 +447,7 @@ watch(
           <FileArchive class="size-5 shrink-0 text-cp-text-secondary" aria-hidden="true" />
           <span class="grid min-w-0 flex-1 gap-1">
             <span class="truncate text-cp-sm font-emphasis text-cp-text">{{ uploadFile?.name ?? '选择插件包' }}</span>
-            <span class="text-cp-xs text-cp-text-secondary">{{ uploadFile ? formatFileSize(uploadFile.size) : 'tar.gz / tgz，最大 32 MiB' }}</span>
+            <span class="text-cp-xs text-cp-text-secondary">{{ uploadFile ? formatPluginFileSize(uploadFile.size) : 'tar.gz / tgz，最大 32 MiB' }}</span>
           </span>
           <span class="shrink-0 text-cp-xs text-cp-primary-text">{{ uploadFile ? '更换' : '浏览文件' }}</span>
           <input
@@ -531,16 +520,14 @@ watch(
 
     <section v-if="!verified && mode === 'github' && release" class="mt-4 grid gap-3">
       <div class="flex min-w-0 flex-wrap items-center gap-2">
-        <strong class="min-w-0 wrap-break-word text-cp text-cp-text">{{ release.name || release.tag }}</strong>
-        <BaseTag type="primary">
-          {{ release.tag }}
-        </BaseTag>
+        <span class="text-cp-sm text-cp-text-secondary">已找到版本</span>
+        <strong class="min-w-0 wrap-break-word text-cp-sm font-emphasis text-cp-text">{{ release.tag }}</strong>
         <BaseTag v-if="release.prerelease" type="warning">
           预发行版
         </BaseTag>
       </div>
-      <BaseFormItem v-if="assetOptions.length > 1" label="插件包" required>
-        <BaseSelect v-model="githubForm.asset" :options="assetOptions" :disabled="busy" placeholder="选择插件包" class="w-full" />
+      <BaseFormItem v-if="releaseAssets.length > 1" label="插件包" required>
+        <PluginAssetPicker v-model="githubForm.asset" :assets="releaseAssets" :disabled="busy" />
       </BaseFormItem>
       <p v-else class="m-0 break-all text-cp-sm text-cp-text-secondary">
         {{ githubForm.asset || '此版本没有 tar.gz 或 tgz 插件包' }}
