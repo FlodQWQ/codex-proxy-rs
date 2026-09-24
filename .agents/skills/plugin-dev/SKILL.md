@@ -3,7 +3,7 @@ name: plugin-dev
 description: 开发 Codex Proxy RS 网关插件，包括选择扩展能力、编写 plugin.json、实现公开 SDK 处理器、管理页面、打包与本地验证。用于新建插件、修改插件或排查插件接入；不用于 OpenAI Codex 的 .codex-plugin 插件、Vue 插件或仅修改宿主插件管理功能。
 ---
 
-# Codex Proxy 插件开发
+# plugin-dev
 
 面向插件作者。插件在独立项目中实现，通过公开 SDK 与宿主通信，不向宿主业务模块添加分支。
 仅修改宿主安装器、Runtime 或管理端时，使用仓库开发指南，不按本技能创建插件工程。
@@ -25,7 +25,7 @@ description: 开发 Codex Proxy RS 网关插件，包括选择扩展能力、编
 1. 确认插件用途、已有工程／输出目录、目标宿主版本与平台。已有项目沿用其结构；没有指定工程时先确认目录，不把插件源码塞进宿主 workspace
 2. 先读 [SDK 入口](../../../backend/crates/gateway-plugin/sdk/README.md) 和[清单](../../../backend/crates/gateway-plugin/sdk/docs/manifest.md)，再按下表只选本次需要的能力章节
 3. 核对实际运行宿主的版本、目标版本的 [SDK Cargo.toml](../../../backend/crates/gateway-plugin/sdk/Cargo.toml) 与[宿主支持清单](../../../backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json)。同时确认打包 CLI 使用相同作者清单合同；不要只看源码版本或依赖包版本号。清单版本、通信版本、能力版本各自独立
-4. 需要构建、联调或交付时读取 [构建与验证](references/development.md)，先检查实际依赖和脚本，不假设包已公开发布
+4. 需要构建、联调或交付时读取 [构建与验证](references/development.md)，先检查实际依赖和脚本，不假设包已公开发布；通过 GitHub 交付时另读其中的[发布与安装来源](references/development.md#发布与安装来源)
 
 本技能相对链接以各文件所在目录解析；主仓根目录是本文件所在目录向上三级。插件工程或同级示例不在磁盘上时，请用户提供位置或使用选定版本的公开资料，不猜开发机绝对路径，也不自动克隆或创建远程仓库。
 
@@ -50,6 +50,7 @@ description: 开发 Codex Proxy RS 网关插件，包括选择扩展能力、编
 - `publisher` 与机器短名 `name` 派生插件 ID，`displayName` 用于展示；复制示例后同时调整扩展项 ID 与注册结果
 - `contributes` 每种能力最多一项，普通贡献项可省略派生 ID、能力版本和固定阶段；中间件阶段仍需显式选择。自定义完整扩展项 ID 属于自己的插件命名空间，运行注册与规范化清单一致
 - 作者清单用 `Manifest::from_author_slice` 规范化，不手写 `package`、固定阶段或重复注册；CLI 生成平台、协议与资源摘要，版本范围不能使用全版本通配
+- 安装后宿主会按 `configurationSchema` 准备默认配置，配置完整即可启用；默认绑定的空范围不限制请求。需要业务参数时声明真实必填项，通过 `secretFields` 声明敏感字段，不依赖用户再走一遍自建安装向导
 - Rust 插件只依赖公开 `gateway-plugin-sdk`；需要异步会话辅助时开启 `io`，使用 `PluginSession` 管理握手、回调关联、流控、取消和关闭
 - 优先用 `PluginBuilder::from_json` 组合 `.middleware`、`.management`、`.command_line` 与 `.on(methods::..., handler)`，由构建器生成注册并检查处理器；单一中间件也可用 `MiddlewarePlugin`
 - stdout 是二进制协议通道，不能用 `println!` 输出诊断。使用基础设施 `host.log`，不输出 secret 或完整请求

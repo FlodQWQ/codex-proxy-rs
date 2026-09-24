@@ -8,8 +8,8 @@
 | --- | --- |
 | 主仓 `backend/crates/gateway-plugin/sdk/` | Rust 公开合同、会话辅助与能力文档 |
 | 主仓 `backend/apps/plugin-cli/` | `cpr-plugin package`，只校验与打包，不编译插件源码 |
-| 独立 `codex-proxy-plugins/examples/workbench/` | 基础能力体验与文本工作流示例，按需选择功能，不整体复制 |
-| 独立 `codex-proxy-ui/` | 可选的 Vue UI 库、组件文档与 playground |
+| [codex-proxy-plugins](https://github.com/zyycn/codex-proxy-plugins) 的 `examples/workbench/` | 基础能力体验与文本工作流示例，按需选择功能，不整体复制 |
+| [codex-proxy-ui](https://github.com/zyycn/codex-proxy-ui) | 可选的 Vue UI 库、组件文档与 playground |
 
 先检查用户给定工程，或主仓父目录下的同级仓库是否存在；读取实际仓库约定、README、`Cargo.toml`、`package.json` 与锁文件。
 只需中间件时不复制示例的管理 API、页面和相关权限；CLI 等能力从 SDK 对应合同起步，不给示例添加无关能力。
@@ -72,12 +72,22 @@ cpr-plugin package \
 ```
 
 没有 `web` 资源时去掉 `--resource-map`。映射源相对于作者清单目录，而非命令执行目录；资源必须留在插件工程内。
-目标平台与二进制必须匹配，不能只改 target 参数伪装交叉编译。支持平台以 [CLI 文档](../../../../backend/apps/plugin-cli/README.md)及实际 `--help` 为准。
+目标平台指运行宿主的服务器／容器，不是访问管理端的浏览器所在电脑；平台与二进制必须匹配，不能只改 target 参数伪装交叉编译。支持平台以 [CLI 文档](../../../../backend/apps/plugin-cli/README.md)及实际 `--help` 为准。
 
 输出为 `.tar.gz` 与 `.sha256`，不是源码 zip、npm 包或页面目录。归档根目录应有生成后的 `plugin.json`、可执行文件和声明资源。
 安装时以本次输出的包摘要为准，核对包内版本、平台、能力和 `engines` 与实际运行宿主匹配；
 源码已更新不代表 `dist` 中旧包已重建。版本要求未满足时使用兼容宿主或确有依据的兼容声明，不跳过宿主检查。
 本地同版本反复试验与对外发布区分处理；发布新内容使用明确的新版本，不覆盖已发布版本。
+
+## 发布与安装来源
+
+仅在用户要求发布或准备分发时执行；沿用目标插件仓库的发布流程，核对源码提交、包内版本、目标平台与产物摘要。
+
+- GitHub 安装读取 Release 附件，发布时上传实际生成的 `.tar.gz`／`.tgz` 和校验文件；仅推送 tag 或保留 GitHub 自动生成的源码归档，不能提供可安装插件
+- 稳定版应发布为非 Draft、非 Pre-release；需要支持留空标签安装时，再核对最新稳定版查询能返回预期 Release。版本号没有预发行后缀，不代表 GitHub 的发布状态已经是正式版
+- 当前宿主在标签留空时只查询最新稳定版；预发行版安装需要同时指定标签并允许预发行，不把该开关解释成自动发现预发行版
+- 多平台或多插件附件由用户按实际发布内容选择，文件名帮助辨识，包内清单才是平台、版本与兼容范围的依据
+- 发布完成后，从公开下载来源核对附件和摘要，再按已授权的目标环境验证安装；本地包验证不等于远程发行附件已经验证
 
 ## 验证与交付
 
