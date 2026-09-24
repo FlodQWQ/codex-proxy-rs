@@ -1,16 +1,9 @@
 <script setup lang="ts">
+import { BaseCard, BaseCheckbox, BaseConfirmModal, BasePageHeader, BaseTable, BaseTableColumnSettings, BaseTablePagination, useTableColumns } from '@codex-proxy/ui'
+
 import { ChevronDown } from '@lucide/vue'
 import { ref } from 'vue'
-
 import AccountGroupMarks from '@/components/AccountGroupMarks.vue'
-import BaseCard from '@/components/base/BaseCard.vue'
-import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
-import BaseConfirmModal from '@/components/base/BaseConfirmModal.vue'
-import BasePageHeader from '@/components/base/BasePageHeader.vue'
-import BaseTableColumnSettings from '@/components/base/BaseTable/BaseTableColumnSettings.vue'
-import BaseTablePagination from '@/components/base/BaseTable/BaseTablePagination.vue'
-import BaseTable from '@/components/base/BaseTable/index.vue'
-import { useTableColumns } from '@/components/base/BaseTable/useTableColumns'
 import LastUsedAtCell from '@/components/LastUsedAtCell.vue'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
 import { useAccountGroupCatalog } from '@/composables/useAccountGroupCatalog'
@@ -88,8 +81,12 @@ const {
   deletingAccount,
   creatingAccount,
   authorizingOAuth,
+  authorization,
+  authorizationCallback,
+  resetAuthorization,
   batchDeleting,
   exportingAccounts,
+  exportDisabledReason,
   reauthorizingAccount,
   createForm,
   handleCreate,
@@ -213,6 +210,7 @@ const {
           :selected-count="selectedIds.size"
           :batch-deleting="batchDeleting"
           :exporting-accounts="exportingAccounts"
+          :export-disabled-reason="exportDisabledReason"
           :has-import-tasks="recentImportTasks.length > 0"
           :active-import-count="activeImportCount"
           @import-tasks="showImportTasks = true"
@@ -394,6 +392,8 @@ const {
     <AccountCreateModal
       v-model="showCreateModal"
       v-model:form="createForm"
+      v-model:callback="authorizationCallback"
+      :authorization="authorization"
       :account="reauthorizingAccount"
       :groups="groups"
       :groups-loading="groupsLoading"
@@ -402,6 +402,7 @@ const {
       :saving="creatingAccount"
       @create="handleCreate"
       @generate-oauth="handleAuthorizeOAuth"
+      @reset-authorization="resetAuthorization"
     />
 
     <AccountEditModal

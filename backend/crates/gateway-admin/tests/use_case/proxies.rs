@@ -153,9 +153,19 @@ async fn authorization_uses_selected_proxy_regardless_of_probe_status() {
                 reauthorization: None,
             };
             let result = if kind == "openai" {
-                services.openai().start_authorization(command).await
+                services
+                    .credentials()
+                    .for_provider(&gateway_core::routing::ProviderKind::new("openai").unwrap())
+                    .unwrap()
+                    .start_authorization(command)
+                    .await
             } else {
-                services.xai().start_authorization(command).await
+                services
+                    .credentials()
+                    .for_provider(&gateway_core::routing::ProviderKind::new("xai").unwrap())
+                    .unwrap()
+                    .start_authorization(command)
+                    .await
             };
             assert!(result.is_ok(), "{kind}, {probe_success:?}: {result:?}");
             assert_eq!(recorded(&events), ["provider.start_authorization"]);
@@ -263,9 +273,19 @@ async fn credential_import_keeps_proxy_reserved_until_commit_and_releases_on_err
                 document: document(),
             };
             let result = if kind == "openai" {
-                services.openai().import_document(command).await
+                services
+                    .credentials()
+                    .for_provider(&gateway_core::routing::ProviderKind::new("openai").unwrap())
+                    .unwrap()
+                    .import_document(command)
+                    .await
             } else {
-                services.xai().import_document(command).await
+                services
+                    .credentials()
+                    .for_provider(&gateway_core::routing::ProviderKind::new("xai").unwrap())
+                    .unwrap()
+                    .import_document(command)
+                    .await
             };
             assert_eq!(result.is_err(), failure.is_some());
             let events = recorded(&events);

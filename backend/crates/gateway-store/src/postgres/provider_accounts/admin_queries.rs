@@ -60,7 +60,7 @@ pub(crate) async fn load_admin_account_page(
 
     let statement = format!(
         "with account_statuses as (
-           select a.id,
+           select a.id, a.provider_kind,
                   case
                     when not a.enabled then 'disabled'
                     when a.credential_state <> 'ready'

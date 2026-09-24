@@ -118,7 +118,7 @@ pub trait ProviderCatalogPort: Send + Sync {
         true
     }
 
-    /// 返回全部已注册 Provider 的目录代次；注册集合在初始化后保持不变。
+    /// 返回当前冻结视图内全部 Provider 的目录代次。
     ///
     /// 即使某个目录暂时不可读，也必须保留它的 Provider 与最近成功发布的代次。
     fn catalog_generations(&self) -> BTreeMap<ProviderKind, ProviderCatalogGeneration>;

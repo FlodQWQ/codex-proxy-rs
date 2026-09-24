@@ -1,5 +1,7 @@
 //! 运行时快照的原子发布、健康状态与跨进程版本收敛。
 
+pub mod extensions;
+
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
@@ -100,10 +102,17 @@ impl RuntimeSnapshotHandle {
             .map(|snapshot| snapshot.provider_catalog_generations().clone())
     }
 
+    /// 控制面只读诊断可观察尚未就绪的发布候选；数据面仍必须通过 [`Self::acquire`]。
+    #[must_use]
+    pub fn snapshot_for_diagnostics(&self) -> Option<Arc<RuntimeSnapshot>> {
+        read_unpoisoned(&self.current).clone()
+    }
+
     /// 冻结当前 Arc；后续发布不改变已经开始的请求。
     pub fn acquire(&self) -> Result<Arc<RuntimeSnapshot>, RuntimeSnapshotUnavailable> {
         read_unpoisoned(&self.current)
             .clone()
+            .filter(|snapshot| snapshot.extensions().is_none_or(|set| set.can_serve()))
             .ok_or(RuntimeSnapshotUnavailable)
     }
 }
@@ -115,7 +124,7 @@ impl HealthProbe for RuntimeSnapshotHandle {
 
     fn check(&self) -> BoxFuture<'_, HealthState> {
         Box::pin(async move {
-            if self.revision().is_some() {
+            if self.acquire().is_ok() {
                 HealthState::Healthy
             } else {
                 HealthState::Unhealthy("Runtime snapshot is unavailable".to_owned())
@@ -170,6 +179,13 @@ impl RuntimeSnapshotPublisher {
         // 所有入口共享从读取事实到发布或暂停的完整临界区；只锁最后的替换会让
         // 旧编译覆盖新授权，或让晚到的失败暂停新快照。请求读取不等待此锁。
         let _refresh = self.refresh_lock.lock().await;
+        self.refresh_locked(mode).await
+    }
+
+    async fn refresh_locked(
+        &self,
+        mode: RefreshMode,
+    ) -> Result<ConfigRevision, RuntimeSnapshotCompileError> {
         let configuration_changed = if matches!(mode, RefreshMode::Reconcile) {
             let persisted_revision = self
                 .compiler
@@ -184,20 +200,30 @@ impl RuntimeSnapshotPublisher {
                 self.published_revision().map(ConfigRevision::get),
                 persisted_revision.get(),
             );
-            if !changed && !self.provider_catalogs_need_refresh() {
+            if !changed
+                && !self.provider_catalogs_need_refresh()
+                && self
+                    .snapshots
+                    .acquire()
+                    .is_ok_and(|snapshot| snapshot.extensions().is_none_or(|set| set.is_ready()))
+            {
                 return Ok(persisted_revision);
             }
             changed
         } else {
             true
         };
-        let snapshot = self.compiler.compile().await.inspect_err(|_| {
-            // 仅目录代次变化时保留旧快照，下一周期继续对账；配置缺失、变化
-            // 或持久 revision 回退均须 fail closed，不按 revision 大小丢弃刷新。
-            if configuration_changed {
-                self.snapshots.suspend();
+        let snapshot = match self.compiler.compile().await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                // 仅目录代次变化时保留旧快照，下一周期继续对账；配置缺失、变化
+                // 或持久 revision 回退均须 fail closed，不按 revision 大小丢弃刷新。
+                if configuration_changed {
+                    self.snapshots.suspend();
+                }
+                return Err(error);
             }
-        })?;
+        };
         let revision = snapshot.revision();
         self.snapshots.publish(snapshot);
         Ok(revision)
@@ -210,17 +236,32 @@ impl RuntimeSnapshotPublisher {
 
     #[must_use]
     fn provider_catalogs_need_refresh(&self) -> bool {
-        self.snapshots.provider_catalog_generations().as_ref()
-            != Some(&self.compiler.provider_catalog_generations())
+        let Ok(snapshot) = self.snapshots.acquire() else {
+            return true;
+        };
+        self.compiler.provider_catalog_generations() != *snapshot.provider_catalog_generations()
     }
 
     /// 数据库提交不能被目录或通知基础设施的暂时故障伪装成回滚。
     async fn publish_committed_inner(&self, committed_revision: ConfigRevision) {
-        let _ = self.refresh().await;
-        let _ = self
+        if let Err(error) = self.refresh().await {
+            tracing::warn!(?error, "committed runtime snapshot refresh failed");
+        }
+        self.notify_committed_revision(committed_revision).await;
+    }
+
+    async fn notify_committed_revision(&self, committed_revision: ConfigRevision) {
+        if let Err(error) = self
             .subscriptions
             .publish_snapshot_revision(committed_revision)
-            .await;
+            .await
+        {
+            tracing::warn!(
+                ?error,
+                revision = committed_revision.get(),
+                "runtime snapshot revision notification failed"
+            );
+        }
     }
 
     /// 交给 Host 的周期对账与长驻订阅任务。

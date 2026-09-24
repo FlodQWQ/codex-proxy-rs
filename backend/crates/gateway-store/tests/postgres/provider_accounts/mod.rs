@@ -4,6 +4,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+mod admin_adapter;
+mod authorization;
 mod quota_forecast;
 mod timestamps;
 
@@ -19,8 +21,8 @@ use gateway_admin::{
         observability::TimeRange,
         provider_credentials::{
             AuthorizationCommit, AuthorizationCredentialCommit, AuthorizationMutationTarget,
-            AuthorizationOwnerBinding, PendingAuthorizationMutation, PreparedCredentialCreate,
-            ProviderDocument,
+            AuthorizationOwnerBinding, PendingAuthorizationMutation, PluginAccountListQuery,
+            PreparedCredentialCreate, ProviderDocument,
         },
     },
     ports::store::AccountStore,
@@ -1961,6 +1963,12 @@ async fn authorization_create_returns_existing_account_id_when_identity_is_upser
     let result = admin_account_store(&database.pool)
         .commit_authorization(
             AuthorizationCommit {
+                key: gateway_admin::model::provider_credentials::AuthorizationReceiptKey::new(
+                    provider_kind.clone(),
+                    "authorization-upsert",
+                    &context,
+                )
+                .unwrap(),
                 settings: Some(gateway_admin::model::accounts::AccountImportSettings {
                     notes: Some("  OAuth 新建备注  ".to_owned()),
                     model_access: Default::default(),
@@ -1976,33 +1984,37 @@ async fn authorization_create_returns_existing_account_id_when_identity_is_upser
                     },
                     AuthorizationOwnerBinding::from_context(&context),
                 ),
-                credential: AuthorizationCredentialCommit::Create(PreparedCredentialCreate {
-                    model_access: Default::default(),
-                    outbound_proxy: None,
-                    account_id: ProviderAccountId::new("acct_authorization_candidate")
-                        .expect("candidate account ID"),
-                    provider_kind,
-                    name: "authorized account".to_owned(),
-                    email: Some("authorized@example.invalid".to_owned()),
-                    upstream_user_id: Some("user-authorization-upsert".to_owned()),
-                    upstream_account_id: None,
-                    plan_type: Some("free".to_owned()),
-                    authentication_kind: "oauth".to_owned(),
-                    provider_material: ProviderDocument::new(OpaqueProviderData::new(
-                        provider_material,
-                    )),
-                    has_refresh_token: true,
-                    access_token_expires_at: Some(Utc::now() + TimeDelta::hours(1)),
-                    next_refresh_at: None,
-                    enabled: true,
-                    credential_state: CredentialState::Ready,
-                    credential_observed_at: Utc::now(),
-                }),
+                credential: AuthorizationCredentialCommit::Create(Box::new(
+                    PreparedCredentialCreate {
+                        model_access: Default::default(),
+                        outbound_proxy: None,
+                        account_id: ProviderAccountId::new("acct_authorization_candidate")
+                            .expect("candidate account ID"),
+                        provider_kind,
+                        name: "authorized account".to_owned(),
+                        email: Some("authorized@example.invalid".to_owned()),
+                        upstream_user_id: Some("user-authorization-upsert".to_owned()),
+                        upstream_account_id: None,
+                        plan_type: Some("free".to_owned()),
+                        authentication_kind: "oauth".to_owned(),
+                        provider_material: ProviderDocument::new(OpaqueProviderData::new(
+                            provider_material,
+                        )),
+                        has_refresh_token: true,
+                        access_token_expires_at: Some(Utc::now() + TimeDelta::hours(1)),
+                        next_refresh_at: None,
+                        enabled: true,
+                        credential_state: CredentialState::Ready,
+                        credential_observed_at: Utc::now(),
+                    },
+                )),
             },
             &context,
         )
         .await
         .expect("authorize existing identity");
+
+    let result = result.result;
 
     assert_eq!(
         (

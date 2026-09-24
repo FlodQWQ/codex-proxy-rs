@@ -1,5 +1,9 @@
 import request from '../request'
 
+export type ProviderRequestProfile = Record<string, unknown>
+export type ProviderRequestProfiles = Record<string, ProviderRequestProfile>
+export type ProviderRequestProfileUpdates = Record<string, ProviderRequestProfile | null>
+
 export interface ClientProfileSelection {
   client: 'desktop' | 'cli'
   platform: 'macos' | 'linux' | 'windows'

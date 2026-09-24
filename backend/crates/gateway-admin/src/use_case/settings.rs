@@ -78,7 +78,7 @@ impl DefaultSettingsService {
     fn profile_provider(
         &self,
         provider: &str,
-    ) -> Result<Arc<dyn crate::ports::provider::ProviderAdmin>, AdminError> {
+    ) -> Result<std::sync::Arc<dyn crate::ports::provider::ProviderAdmin>, AdminError> {
         let kind = gateway_core::routing::ProviderKind::new(provider)
             .map_err(|_| AdminError::invalid("Provider 不合法"))?;
         self.providers
@@ -128,6 +128,14 @@ impl SettingsService for DefaultSettingsService {
                 .any(std::collections::BTreeSet::is_empty)
         {
             return Err(AdminError::invalid("请选择 1 至 10000 个模型"));
+        }
+        let providers = self.providers.pricing_catalog();
+        if command
+            .models
+            .keys()
+            .any(|provider| !providers.contains_key(provider))
+        {
+            return Err(AdminError::invalid("Provider 不支持价目管理"));
         }
         let mut current = self.pricing_source.fetch().await?;
         if current != command.preview {
@@ -262,8 +270,8 @@ impl SettingsService for DefaultSettingsService {
         &self,
         provider: &str,
     ) -> Result<gateway_core::account::OpaqueProviderData, AdminError> {
-        let mut options = self
-            .profile_provider(provider)?
+        let profile_provider = self.profile_provider(provider)?;
+        let mut options = profile_provider
             .client_profile_options()
             .map_err(|error| super::map_provider_error(error, "client profile"))?
             .into_inner();
@@ -272,6 +280,7 @@ impl SettingsService for DefaultSettingsService {
             .await?
             .client_profile(provider)
             .cloned()
+            .or_else(|| profile_provider.default_client_profile())
             .ok_or_else(|| AdminError::internal("通用客户端身份尚未初始化"))?;
         options.insert(
             "globalConfiguration".to_owned(),
@@ -295,6 +304,7 @@ impl SettingsService for DefaultSettingsService {
                 .await?
                 .client_profile(provider)
                 .cloned()
+                .or_else(|| profile_provider.default_client_profile())
                 .ok_or_else(|| AdminError::internal("通用客户端身份尚未初始化"))?;
             (&global, "global")
         };
@@ -316,16 +326,38 @@ impl SettingsService for DefaultSettingsService {
     async fn replace(
         &self,
         context: &MutationContext,
-        command: ReplaceRuntimeSettings,
+        mut command: ReplaceRuntimeSettings,
     ) -> Result<RuntimeSettings, AdminError> {
         validate_settings(&command)?;
-        for (provider, profile) in [
-            ("openai", &command.openai_client_profile),
-            ("xai", &command.xai_client_profile),
-        ] {
-            if let Some(profile) = profile {
-                self.profile_provider(provider)?
-                    .preview_client_profile(profile)
+        if command
+            .request_profile_updates
+            .values()
+            .any(Option::is_some)
+        {
+            let current = self
+                .store
+                .load_runtime_settings()
+                .await
+                .map_err(|error| map_store_error(error, "runtime settings"))?;
+            command.request_profile_updates.retain(|provider, update| {
+                !update
+                    .as_ref()
+                    .is_some_and(|profile| current.request_profiles.get(provider) == Some(profile))
+            });
+        }
+        if command
+            .request_profile_updates
+            .values()
+            .any(Option::is_some)
+        {
+            let providers = &self.providers;
+            for (provider, profile) in &command.request_profile_updates {
+                let Some(profile) = profile else {
+                    continue;
+                };
+                providers
+                    .require(provider)
+                    .and_then(|provider| provider.preview_client_profile(profile))
                     .map_err(|error| super::map_provider_error(error, "client profile"))?;
             }
         }

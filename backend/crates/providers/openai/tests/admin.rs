@@ -65,6 +65,29 @@ const COMPLETED_SESSION_SSE: &str = concat!(
 );
 
 #[tokio::test]
+async fn account_capabilities_distinguish_oauth_from_api_key_and_unknown_credentials() {
+    let config = valid_config();
+    let bundle = provider_openai::initialize(config.config.clone(), provider_ports())
+        .await
+        .unwrap();
+    let provider = bundle.admin_provider();
+    let id = ProviderAccountId::new("acct_capabilities").unwrap();
+    let oauth = provider.account_capabilities(&id, "oauth");
+    assert!(
+        oauth.quota
+            && oauth.quota_refresh
+            && oauth.profile
+            && oauth.subscription
+            && oauth.avatar
+            && oauth.reset_credits
+            && oauth.consume_reset_credit
+    );
+    for kind in ["api_key", "unknown"] {
+        assert_eq!(provider.account_capabilities(&id, kind), Default::default());
+    }
+}
+
+#[tokio::test]
 async fn openai_bundle_exposes_one_core_provider_and_drains_worker_contributions_once() {
     let config = valid_config();
     let mut bundle = provider_openai::initialize(config.config.clone(), provider_ports())
@@ -265,7 +288,7 @@ async fn initialized_provider_keeps_thread_spawn_transport_conversations_distinc
         .expect("OpenAI payload")
         .with_context(Map::from_iter([("use_websocket".to_owned(), json!(false))]));
         let operation = Operation::Generate(GenerateRequest::from_protocol_payload(payload));
-        let mut stream = provider
+        let mut stream = Arc::clone(&provider)
             .execute(
                 initialized_provider_request(operation, account_id),
                 initialized_attempt_context(request_id, account_id),
@@ -715,6 +738,7 @@ async fn openai_admin_provider_projects_cached_quota_models_and_canonical_export
             &UpstreamModelId::new("gpt-5.4").expect("upstream model"),
             "Reply with exactly OK.",
         )
+        .await
         .expect("connection test operation");
     let Operation::Generate(request) = operation else {
         panic!("connection test must be a generate operation");
