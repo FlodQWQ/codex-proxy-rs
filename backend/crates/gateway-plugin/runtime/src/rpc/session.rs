@@ -480,19 +480,37 @@ impl RpcSession {
         {
             return Err(RpcError::Handshake);
         }
-        let process = processes
-            .spawn(ProcessSpec {
+        let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
+        let process = loop {
+            match processes.spawn(ProcessSpec {
                 executable: package.executable().to_owned(),
                 directory: package.directory().to_owned(),
                 maximum_stderr_bytes: limits.maximum_stderr_bytes,
-            })
-            .map_err(RpcError::Start)?;
+            }) {
+                Ok(process) => break process,
+                Err(
+                    error @ ProcessStartError::Spawn {
+                        kind: std::io::ErrorKind::ExecutableFileBusy,
+                        ..
+                    },
+                ) => {
+                    // Unix 并发 fork 可能短暂继承解包时的写句柄（rust-lang/rust#114554）。
+                    // 仅重试尚未执行的文件忙错误，并与握手共享启动期限。
+                    let retry_at = tokio::time::Instant::now() + Duration::from_millis(10);
+                    if retry_at >= deadline {
+                        return Err(RpcError::Start(error));
+                    }
+                    tokio::time::sleep_until(retry_at).await;
+                }
+                Err(error) => return Err(RpcError::Start(error)),
+            }
+        };
         let gateway_host::process::ProcessConnection {
             mut input,
             mut output,
             control: process,
         } = process;
-        let ready = tokio::time::timeout(limits.handshake_timeout, async {
+        let ready = tokio::time::timeout_at(deadline, async {
             write_frame(
                 &mut input,
                 &Frame::control(Message::Hello {

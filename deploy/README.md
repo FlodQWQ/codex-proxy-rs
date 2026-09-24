@@ -213,6 +213,10 @@ goals = true
 不要重复添加 `[features]` 或 Provider 表。更换模型时也要检查其支持的推理强度。
 密钥以明文保存，文件仅供本人读取，不要提交到 Git。
 
+需要指定完整模型目录时，在账号的模型列表中导出所选 Codex 模型，并在 `config.toml` 顶层设置
+`model_catalog_json = "/absolute/path/to/cpr-model-catalog.json"`。导出文件不含账号凭据；
+它是一次目录快照，调整选择或上游模型能力变化后需重新导出。
+
 ### auth.json
 
 ```json
@@ -237,6 +241,8 @@ goals = true
 
 客户端到代理、代理到上游是两段独立连接。客户端关闭 WebSocket 后，
 服务端仍可能用 WebSocket 访问上游；客户端开关不控制服务端连接池和 HTTP 回退策略。
+OpenAI OAuth 账号的上游传输方式默认 WS；固定为 SSE 的账号不承接必须依赖 WS 的预热及连接内续接。
+仅使用这类账号时，客户端保持 `supports_websockets = false`，避免先尝试 WS 再回退。
 
 ### 客户端配置兼容
 

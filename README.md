@@ -19,16 +19,6 @@
 > [!NOTE]
 > 本项目提供 Responses API，不支持 `/v1/chat/completions`，接入前请确认客户端支持 Responses 协议
 
-## 功能
-
-| 场景 | 能力 |
-| --- | --- |
-| 客户端接入 | Responses HTTP / SSE / WebSocket、Images、模型目录与 standalone Search |
-| 多账号与路由 | 内置 OpenAI、xAI，账号分组、模型范围、出站代理与安全重试 |
-| 使用与管理 | 管理端、Key 自助用量页、费用限额、请求记录与错误诊断 |
-| 插件扩展 | 制品访问域确认、自动默认配置，中间件、管理页面和其他声明能力 |
-| 运维 | 单副本部署，PostgreSQL / Redis、S3/R2 备份与同一大版本内在线更新 |
-
 ## 快速预览
 
 无需部署，打开 [快速预览服务](https://codex-proxy-rs.ainz.cc) 即可体验管理端的系统概览、账号分组、代理管理与用量统计

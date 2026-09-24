@@ -72,6 +72,16 @@ create table plugin_instance_secrets (
     secrets_json jsonb not null check (jsonb_typeof(secrets_json) = 'object' and octet_length(secrets_json::text) <= 65536)
 );
 
+-- 配置恢复与插件私有状态迁移分离，删除实例或制品时同步清理对应快照。
+create table plugin_version_configurations (
+    instance_id uuid not null references plugin_instances(id) on delete cascade,
+    artifact_sha256 text not null references plugin_artifacts(sha256) on delete cascade,
+    configuration_json jsonb not null check (jsonb_typeof(configuration_json) = 'object'),
+    secrets_json jsonb not null check (jsonb_typeof(secrets_json) = 'object'),
+    bindings_json jsonb not null check (jsonb_typeof(bindings_json) = 'array'),
+    primary key (instance_id, artifact_sha256)
+);
+
 -- 私有状态与配置 revision 分离；普通状态写入不得推进全局 revision。
 create table plugin_state_generations (
     id uuid primary key,
@@ -143,3 +153,31 @@ create table authorization_receipts (
 );
 
 create index authorization_receipts_expiry_idx on authorization_receipts (expires_at);
+
+-- 手动位置与自动检测结果独立保存，关闭自动模式可恢复原有配置。
+alter table outbound_proxies
+    add column auto_location boolean not null default false,
+    add column detected_location_json jsonb,
+    add column last_location_detection_json jsonb not null default '{"status":"notRequested"}'::jsonb;
+
+-- 定时账号预热默认关闭，启用时必须显式选择模型。
+alter table runtime_settings
+    add column account_warmup_enabled boolean not null default false,
+    add column account_warmup_schedule_time text not null default '08:00'
+        check (
+            octet_length(account_warmup_schedule_time) between 5 and 255
+            and account_warmup_schedule_time = btrim(account_warmup_schedule_time)
+            and account_warmup_schedule_time !~ '[[:cntrl:]]'
+            and account_warmup_schedule_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9](,([01][0-9]|2[0-3]):[0-5][0-9])*$'
+        ),
+    add column account_warmup_model text
+        check (
+            account_warmup_model is null
+            or (
+                octet_length(account_warmup_model) between 1 and 128
+                and account_warmup_model = btrim(account_warmup_model)
+                and account_warmup_model !~ '[[:cntrl:]]'
+            )
+        ),
+    add constraint account_warmup_requires_model
+        check (not account_warmup_enabled or account_warmup_model is not null);

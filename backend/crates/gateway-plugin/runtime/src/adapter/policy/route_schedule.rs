@@ -374,14 +374,9 @@ fn project_headers(
     let mut total_bytes = 0_usize;
     for entry in entries {
         let pair = entry.as_array().filter(|pair| pair.len() == 2).ok_or(())?;
-        let name = pair[0].as_str().ok_or(())?;
+        let name = normalized_header_name(pair[0].as_str().ok_or(())?)?;
         let value_base64 = pair[1].as_str().ok_or(())?;
-        if name.is_empty()
-            || name.len() > MAX_HEADER_NAME_BYTES
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-            || value_base64.len() > MAX_HEADER_VALUE_BYTES
+        if value_base64.len() > MAX_HEADER_VALUE_BYTES
             || value_base64.len() % 4 != 0
             || !value_base64
                 .bytes()
@@ -396,11 +391,11 @@ fn project_headers(
         if total_bytes > MAX_HEADER_TOTAL_BYTES {
             return Err(());
         }
-        if sensitive_or_identity_header(name) {
+        if sensitive_or_identity_header(&name) {
             continue;
         }
         projected.push(PolicyHeader {
-            name: name.to_owned(),
+            name,
             value_base64: value_base64.to_owned(),
         });
     }
@@ -408,12 +403,13 @@ fn project_headers(
 }
 
 fn normalized_header_name(name: &str) -> Result<String, ()> {
-    let name = name.trim().to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
     if name.is_empty()
         || name.len() > MAX_HEADER_NAME_BYTES
         || !name
             .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            // HTTP token 允许下划线等字符；合法会话别名仍由后续可见性规则隐藏。
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
     {
         return Err(());
     }

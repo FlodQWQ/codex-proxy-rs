@@ -206,6 +206,9 @@ fn operation() -> Operation {
         "opaque_request_headers": [
             ["x-feature", "b24="],
             ["authorization", "c2VjcmV0"],
+            ["session_id", "c2VjcmV0"],
+            ["thread_id", "c2VjcmV0"],
+            ["X_Extension!#$%&'*+-.^_`|~", "b24="],
         ]
     })
     .as_object()
@@ -309,7 +312,10 @@ async fn model_router_preserves_order_and_only_projects_authorized_request_data(
     );
     assert_eq!(
         lines[1]["request"]["headers"],
-        serde_json::json!([{"name":"x-feature","value_base64":"b24="}])
+        serde_json::json!([
+            {"name":"x-feature","value_base64":"b24="},
+            {"name":"x_extension!#$%&'*+-.^_`|~","value_base64":"b24="}
+        ])
     );
     assert!(!lines[1].to_string().contains("secret"));
     drop(context);

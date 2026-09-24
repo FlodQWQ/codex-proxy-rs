@@ -24,7 +24,7 @@ description: 开发 Codex Proxy RS 网关插件，包括选择扩展能力、编
 
 1. 确认插件用途、已有工程／输出目录、目标宿主版本与平台。已有项目沿用其结构；没有指定工程时先确认目录，不把插件源码塞进宿主 workspace
 2. 先读 [SDK 入口](../../../backend/crates/gateway-plugin/sdk/README.md) 和[清单](../../../backend/crates/gateway-plugin/sdk/docs/manifest.md)，再按下表只选本次需要的能力章节
-3. 核对目标版本的 [SDK Cargo.toml](../../../backend/crates/gateway-plugin/sdk/Cargo.toml) 与[宿主支持清单](../../../backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json)。当前源码支持某能力，不代表较旧宿主支持；清单版本、通信版本、能力版本也不能混用
+3. 核对实际运行宿主的版本、目标版本的 [SDK Cargo.toml](../../../backend/crates/gateway-plugin/sdk/Cargo.toml) 与[宿主支持清单](../../../backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json)。同时确认打包 CLI 使用相同作者清单合同；不要只看源码版本或依赖包版本号。清单版本、通信版本、能力版本各自独立
 4. 需要构建、联调或交付时读取 [构建与验证](references/development.md)，先检查实际依赖和脚本，不假设包已公开发布
 
 本技能相对链接以各文件所在目录解析；主仓根目录是本文件所在目录向上三级。插件工程或同级示例不在磁盘上时，请用户提供位置或使用选定版本的公开资料，不猜开发机绝对路径，也不自动克隆或创建远程仓库。
@@ -48,7 +48,7 @@ description: 开发 Codex Proxy RS 网关插件，包括选择扩展能力、编
 ### 清单与处理器
 
 - `publisher` 与机器短名 `name` 派生插件 ID，`displayName` 用于展示；复制示例后同时调整扩展项 ID 与注册结果
-- `contributes` 每种能力最多一项，完整扩展项 ID 属于自己的插件命名空间；运行注册必须与作者清单一致
+- `contributes` 每种能力最多一项，普通贡献项可省略派生 ID、能力版本和固定阶段；中间件阶段仍需显式选择。自定义完整扩展项 ID 属于自己的插件命名空间，运行注册与规范化清单一致
 - 作者清单用 `Manifest::from_author_slice` 规范化，不手写 `package`、固定阶段或重复注册；CLI 生成平台、协议与资源摘要，版本范围不能使用全版本通配
 - Rust 插件只依赖公开 `gateway-plugin-sdk`；需要异步会话辅助时开启 `io`，使用 `PluginSession` 管理握手、回调关联、流控、取消和关闭
 - 优先用 `PluginBuilder::from_json` 组合 `.middleware`、`.management`、`.command_line` 与 `.on(methods::..., handler)`，由构建器生成注册并检查处理器；单一中间件也可用 `MiddlewarePlugin`
@@ -62,12 +62,14 @@ description: 开发 Codex Proxy RS 网关插件，包括选择扩展能力、编
 - 权限只声明 `network`、`models`、`accounts`、`requests`、`public_endpoints`；日志和自身状态无需授权项。安装器不配置 Key／账号白名单，资源选择属于插件业务
 - 模型、网络和亲和查询使用当前父调用的受管回调。管理／CLI 等独立入口调用模型时传明确的 Key ID；请求处理阶段继承父身份。见[Key、模型与模型调用](../../../backend/crates/gateway-plugin/sdk/docs/capabilities.md#key模型与模型调用)
 - SDK 操作名不是管理员 HTTP 路由，不能据此拼接口地址；宿主身份、账单事实和调用授权也不能由插件覆盖
+- 路由与调度只读取宿主投影的请求事实，身份头可能被隐藏；使用已有会话和亲和合同，不依赖原始认证头或根据缓存键补造客户端身份
 
 ### 只有需要页面时才创建前端
 
 - 优先参考独立示例仓库的 `examples/workbench/frontend/src/api/`：业务路由放在 `modules/`，`request.ts` 封装公开宿主桥；按需使用 `@codex-proxy/ui` 包出口，不跨仓导入宿主或 UI 的内部源码
 - Vue 页面保留 SFC，逻辑、脚本和配置使用 TypeScript；只实现业务内容，标题和副标题由 `ManagementPage` 交给宿主显示
 - 隔离页面通过 `window.codexProxyPlugin.request` 调用已注册管理路由；`models.responses` 通过普通请求链交付 JSON/SSE，支持取消且不暴露 Key 明文。不直接 `fetch` 宿主、不读取管理 Cookie 或借用宿主 Vue 实例
+- 管理路由的响应正文由插件业务定义，不默认套用宿主管理 API 的 `{ code, message, data }`；页面与处理器共享实际合同，GET 无正文时不附带 JSON 正文声明
 - `host.model.*` 子请求跳过发起插件，不能用它证明本插件中间件／路由已参与；需要完整请求链的示例使用页面模型桥或真实客户端
 - JS、CSS、图标等资源随包构建和声明；沿用宿主桥的主题同步。Vite 本地预览不等于已安装插件的热更新，宿主验证仍需重新构建、打包和切换版本
 

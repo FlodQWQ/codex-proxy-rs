@@ -159,6 +159,27 @@ async fn session<C>(
 where
     C: CallbackHandler + 'static,
 {
+    let (cache, prepared, handshake, processes) = prepared_session(permissions);
+    let session = RpcSession::start(
+        prepared,
+        handshake,
+        RpcLimits::default(),
+        &processes,
+        callbacks,
+    )
+    .await
+    .unwrap();
+    (cache, Arc::new(session))
+}
+
+fn prepared_session(
+    permissions: Vec<Permission>,
+) -> (
+    tempfile::TempDir,
+    Arc<gateway_plugin_runtime::PreparedPackage>,
+    Handshake,
+    gateway_host::process::ProcessSupervisor,
+) {
     let cache = tempfile::tempdir().unwrap();
     let package = Arc::new(
         ValidatedPackage::read(
@@ -186,16 +207,80 @@ where
     };
     let processes =
         gateway_host::process::ProcessSupervisor::new(std::num::NonZeroUsize::new(128).unwrap());
+    (cache, prepared, handshake, processes)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn newly_unpacked_busy_executable_recovers_within_startup_deadline() {
+    let (_cache, prepared, handshake, processes) = prepared_session(vec![]);
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(prepared.executable())
+        .unwrap();
+    let closing = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(writer);
+    });
     let session = RpcSession::start(
         prepared,
         handshake,
         RpcLimits::default(),
         &processes,
-        callbacks,
+        Arc::new(Callbacks::default()),
     )
     .await
     .unwrap();
-    (cache, Arc::new(session))
+    closing.await.unwrap();
+    session.shutdown(Duration::from_secs(1)).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn persistently_busy_executable_stops_retrying_and_releases_capacity() {
+    let (_cache, prepared, handshake, _) = prepared_session(vec![]);
+    let processes =
+        gateway_host::process::ProcessSupervisor::new(std::num::NonZeroUsize::new(1).unwrap());
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(prepared.executable())
+        .unwrap();
+    let limits = RpcLimits {
+        handshake_timeout: Duration::from_millis(100),
+        ..RpcLimits::default()
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        RpcSession::start(
+            Arc::clone(&prepared),
+            handshake.clone(),
+            limits,
+            &processes,
+            Arc::new(Callbacks::default()),
+        ),
+    )
+    .await
+    .expect("bounded startup");
+    assert!(matches!(
+        result,
+        Err(RpcError::Start(
+            gateway_host::process::ProcessStartError::Spawn {
+                kind: std::io::ErrorKind::ExecutableFileBusy,
+                ..
+            }
+        ))
+    ));
+    drop(writer);
+    let session = RpcSession::start(
+        prepared,
+        handshake,
+        RpcLimits::default(),
+        &processes,
+        Arc::new(Callbacks::default()),
+    )
+    .await
+    .unwrap();
+    session.shutdown(Duration::from_secs(1)).await;
 }
 
 #[tokio::test]
