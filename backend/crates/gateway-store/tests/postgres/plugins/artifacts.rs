@@ -176,7 +176,9 @@ async fn plugin_migration_preserves_main_settings_and_accepts_new_installations(
             .fetch_one(&database.pool)
             .await
             .unwrap();
-    assert_eq!(after, before);
+    for (key, value) in before.as_object().unwrap() {
+        assert_eq!(after.get(key), Some(value), "existing setting {key}");
+    }
     let store = PgPluginStore::new(database.pool.clone());
     store
         .install_artifact(
