@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use gateway_core::account::{
-    AccountCandidate, AccountCapacitySnapshot, AccountEligibilityPolicy, AccountErrorReason,
+    AccountCandidate, AccountCapacitySnapshot, AccountConcurrency, AccountEligibilityPolicy,
+    AccountErrorReason,
     AccountFeedbackStats, AccountRuntimeSignals, AccountSchedulingBlocker, AccountSelectionContext,
     AccountSelector, AccountStatus, CredentialState, PreferredAccountSelection, ProviderAccount,
     ProviderAccountId, QuotaEvidence,
@@ -700,8 +701,16 @@ impl CodexCredentialSelector {
                             self.provider_kind.clone(),
                             account.id().clone(),
                             account.revision(),
-                            account.effective_concurrency(policy.max_concurrent_per_account()),
-                            policy.request_interval(),
+                            if diagnostic {
+                                AccountConcurrency::Unlimited
+                            } else {
+                                account.effective_concurrency(policy.max_concurrent_per_account())
+                            },
+                            if diagnostic {
+                                Duration::ZERO
+                            } else {
+                                policy.request_interval()
+                            },
                             request.attempt.deadline(),
                         ),
                     ))

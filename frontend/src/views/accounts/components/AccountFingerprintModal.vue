@@ -24,6 +24,7 @@ const selectedAccountIds = ref<string[]>([])
 const selectedModel = ref('')
 const results = ref<FingerprintResult[]>([])
 const currentIndex = ref(0)
+const FINGERPRINT_CONCURRENCY = 3
 const selectedAccounts = computed(() => accounts.value.filter(account => selectedAccountIds.value.includes(account.id)))
 const modelOptions = computed(() => models.value.map(model => ({ label: model.label, value: model.id })))
 
@@ -74,29 +75,32 @@ async function runTests() {
   results.value = []
   currentIndex.value = 0
   let completed = false
-  for (const [index, account] of selectedAccounts.value.entries()) {
-    currentIndex.value = index + 1
-    try {
-      const result = await testAccountFingerprint(
-        { accountId: account.id, modelId: selectedModel.value },
-        { timeout: 600_000, silent: true },
-      )
-      setResult(account.id, result)
-      completed = true
-    }
-    catch (error: unknown) {
-      setResult(account.id, {
-        accountId: account.id,
-        sentModel: selectedModel.value,
-        responseModel: null,
-        confidence: null,
-        status: 'inconclusive',
-        attempted: 0,
-        usedOutputs: 0,
-        expiresAt: null,
-        error: error instanceof Error ? error.message : '指纹检测失败',
-      })
-    }
+  for (let offset = 0; offset < selectedAccounts.value.length; offset += FINGERPRINT_CONCURRENCY) {
+    const batch = selectedAccounts.value.slice(offset, offset + FINGERPRINT_CONCURRENCY)
+    await Promise.all(batch.map(async (account) => {
+      try {
+        const result = await testAccountFingerprint(
+          { accountId: account.id, modelId: selectedModel.value },
+          { timeout: 600_000, silent: true },
+        )
+        setResult(account.id, result)
+        completed = true
+      }
+      catch (error: unknown) {
+        setResult(account.id, {
+          accountId: account.id,
+          sentModel: selectedModel.value,
+          responseModel: null,
+          confidence: null,
+          status: 'inconclusive',
+          attempted: 0,
+          usedOutputs: 0,
+          expiresAt: null,
+          error: error instanceof Error ? error.message : '指纹检测失败',
+        })
+      }
+      currentIndex.value += 1
+    }))
   }
   running.value = false
   currentIndex.value = 0
@@ -136,6 +140,7 @@ function confidence(value: number | null) {
         <BaseSelect
           v-model="selectedModel"
           aria-label="目标模型"
+          class="w-full sm:w-80"
           :options="modelOptions"
           :disabled="loading || running || models.length === 0"
           placeholder="选择要验证的模型"

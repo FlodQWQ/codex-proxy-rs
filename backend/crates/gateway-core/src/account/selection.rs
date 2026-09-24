@@ -436,6 +436,17 @@ impl AccountEligibilityPolicy {
     pub const fn bypasses_local_eligibility(self) -> bool {
         matches!(self, Self::BypassForDiagnostic)
     }
+
+    /// 诊断请求是短时、显式触发的探测，不应被账号日常并发槽位挡住。
+    #[must_use]
+    pub const fn bypasses_concurrency(self) -> bool {
+        matches!(self, Self::BypassForDiagnostic)
+    }
+
+    #[must_use]
+    pub const fn bypasses_request_interval(self) -> bool {
+        matches!(self, Self::BypassForDiagnostic)
+    }
 }
 
 /// 候选账号未进入调度池的约束。
@@ -659,19 +670,24 @@ impl AccountSelector {
         {
             return Some(AccountSchedulingBlocker::OutsideClientScope);
         }
+        let status = candidate
+            .account
+            .status_projection(context.now, candidate.signals.cooldown)
+            .status;
         if !context.eligibility.bypasses_local_eligibility() {
-            let status = candidate
-                .account
-                .status_projection(context.now, candidate.signals.cooldown)
-                .status;
             if status != AccountStatus::Normal {
                 return Some(AccountSchedulingBlocker::LocalAvailability);
             }
+        } else if status == AccountStatus::QuotaExhausted {
+            // 即使是诊断请求也不能消耗已知无额度的账号；其它本地状态
+            // （冷却、过期、暂时错误）仍交给探测请求向上游确认。
+            return Some(AccountSchedulingBlocker::LocalAvailability);
         }
         if context.excluded_accounts.contains(candidate.account.id()) {
             return Some(AccountSchedulingBlocker::Excluded);
         }
-        if candidate
+        if !context.eligibility.bypasses_concurrency()
+            && candidate
             .account
             .effective_concurrency(context.policy.max_concurrent_per_account())
             .limit()
@@ -679,7 +695,8 @@ impl AccountSelector {
         {
             return Some(AccountSchedulingBlocker::ConcurrencyLimit);
         }
-        if candidate
+        if !context.eligibility.bypasses_request_interval()
+            && candidate
             .signals
             .last_started_at
             .is_some_and(|last_started| {
