@@ -13,8 +13,9 @@ withDefaults(defineProps<{
   accountId?: string
   preserveProxy?: boolean
   preserveModelAccess?: boolean
+  showScheduling?: boolean
   proxyError?: string
-}>(), { preserveProxy: true })
+}>(), { preserveProxy: true, showScheduling: true })
 
 const modelAccess = defineModel<AccountModelAccess | undefined>('modelAccess', { required: true })
 const enabled = defineModel<boolean>('enabled', { required: true })
@@ -28,7 +29,7 @@ const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: t
 <template>
   <div class="grid gap-5">
     <AccountModelAccessField v-model="modelAccess" :account-id="accountId" :disabled="disabled" :allow-preserve="preserveModelAccess" />
-    <div class="flex min-h-6 items-center justify-between gap-3">
+    <div v-if="showScheduling" class="flex min-h-6 items-center justify-between gap-3">
       <span class="text-cp leading-none font-medium text-cp-text-secondary">调度</span>
       <BaseSwitch
         v-model="enabled"

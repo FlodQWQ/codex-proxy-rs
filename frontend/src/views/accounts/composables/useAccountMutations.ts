@@ -5,6 +5,7 @@ import { toast } from '@codex-proxy/ui'
 import dayjs from 'dayjs'
 import { computed, ref, shallowReactive, watch } from 'vue'
 import {
+  batchUpdateAccounts,
   deleteAccounts,
   exportAccounts,
   getAccountModelCatalog,
@@ -43,6 +44,7 @@ export function useAccountMutations(options: {
   const refreshingAccounts = useIdSet<string>()
   const refreshingQuotaAccounts = useIdSet<string>()
   const downloadingCatalogAccounts = useIdSet<string>()
+  const togglingSchedulingAccounts = useIdSet<string>()
   const deletingAccountAction = useAsyncAction()
   const batchDeletingAction = useAsyncAction()
   const exportingAccountsAction = useAsyncAction()
@@ -50,6 +52,7 @@ export function useAccountMutations(options: {
   const refreshingAccountIds = refreshingAccounts.ids
   const refreshingQuotaAccountIds = refreshingQuotaAccounts.ids
   const downloadingCatalogAccountIds = downloadingCatalogAccounts.ids
+  const togglingSchedulingAccountIds = togglingSchedulingAccounts.ids
   const deletingAccount = deletingAccountAction.loading
   const batchDeleting = batchDeletingAction.loading
   const exportingAccounts = exportingAccountsAction.loading
@@ -203,6 +206,17 @@ export function useAccountMutations(options: {
     })
   }
 
+  async function handleToggleScheduling(account: AccountRow) {
+    await togglingSchedulingAccounts.run(account.id, async () => {
+      try {
+        await batchUpdateAccounts({ accountIds: [account.id], enabled: !account.enabled })
+        await loadAccounts()
+        toast.success(account.enabled ? '调度已停用' : '调度已启用')
+      }
+      catch {}
+    })
+  }
+
   async function handleRefreshQuota(accountId: string) {
     await refreshingQuotaAccounts.run(accountId, async () => {
       try {
@@ -296,6 +310,7 @@ export function useAccountMutations(options: {
     refreshingAccountIds,
     refreshingQuotaAccountIds,
     downloadingCatalogAccountIds,
+    togglingSchedulingAccountIds,
     deletingAccount,
     batchDeleting,
     exportingAccounts,
@@ -309,5 +324,6 @@ export function useAccountMutations(options: {
     handleRefresh,
     handleRefreshQuota,
     handleQuotaReset,
+    handleToggleScheduling,
   }
 }

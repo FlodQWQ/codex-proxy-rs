@@ -79,6 +79,7 @@ const {
   refreshingAccountIds,
   refreshingQuotaAccountIds,
   downloadingCatalogAccountIds,
+  togglingSchedulingAccountIds,
   deletingAccount,
   creatingAccount,
   authorizingOAuth,
@@ -103,6 +104,7 @@ const {
   handleRefresh,
   handleRefreshQuota,
   handleQuotaReset,
+  handleToggleScheduling,
 } = useAccountMutations({
   onImportTaskCreated: importTasks.created,
   accounts,
@@ -166,6 +168,7 @@ const {
 
 const {
   apiKey: editingApiKey,
+  oauthTransport: editingOAuthTransport,
   configurationLoading,
   configurationReady,
   showEditModal,
@@ -325,6 +328,7 @@ const {
                 :recovering="recoveringAccountIds.has(row.id)"
                 :refreshing="refreshingAccountIds.has(row.id)"
                 :testing="testingConnectionIds.has(row.id)"
+                :toggling-scheduling="togglingSchedulingAccountIds.has(row.id)"
                 @edit="openAccountEdit"
                 @delete="requestDeleteAccount"
                 @download-model-catalog="handleDownloadModelCatalog"
@@ -332,6 +336,7 @@ const {
                 @refresh="handleRefresh"
                 @reauthorize="openReauthorizeAccount"
                 @test="openConnectionTest"
+                @toggle-scheduling="handleToggleScheduling"
               />
             </template>
 
@@ -412,6 +417,7 @@ const {
     <AccountEditModal
       v-model="showEditModal"
       v-model:api-key="editingApiKey"
+      v-model:oauth-transport="editingOAuthTransport"
       v-model:notes="editingNotes"
       v-model:enabled="schedulingEnabled"
       v-model:concurrency-limit="editingConcurrencyLimit"

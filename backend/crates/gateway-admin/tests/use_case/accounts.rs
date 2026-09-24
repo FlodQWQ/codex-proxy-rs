@@ -246,6 +246,7 @@ impl FakeProviderAdmin {
                 email: account.email.clone(),
                 plan_type: account.plan_type.clone(),
                 preserve_profile: false,
+                preserve_credential_state: false,
                 provider_material: document(),
                 has_refresh_token: account.has_refresh_token,
                 access_token_expires_at: account
@@ -3088,6 +3089,7 @@ fn plugin_rotation_facts(account: &AccountRecord) -> PreparedCredentialRotationF
         email: account.email.clone(),
         plan_type: account.plan_type.clone(),
         preserve_profile: true,
+        preserve_credential_state: false,
         provider_material: document(),
         has_refresh_token: account.has_refresh_token,
         access_token_expires_at: account.access_token_expires_at,

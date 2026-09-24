@@ -3,9 +3,9 @@ import type { AccountRow } from '../constants'
 import type { ApiKeyAccountForm } from '../utils/upstreamApiKey'
 import type { AccountGroup, AccountModelAccess } from '@/api'
 
-import { BaseButton, BaseFormItem, BaseModal, BaseTextarea } from '@codex-proxy/ui'
+import { BaseButton, BaseFormItem, BaseModal, BaseSegmented, BaseTextarea } from '@codex-proxy/ui'
 import ProviderIconGroup from '@/components/ProviderIconGroup.vue'
-import { isOpenAiApiKeyAccount } from '../utils/upstreamApiKey'
+import { isOpenAiApiKeyAccount, isOpenAiOAuthAccount } from '../utils/upstreamApiKey'
 import AccountApiKeyFields from './AccountApiKeyFields.vue'
 import AccountIdentityCell from './AccountIdentityCell.vue'
 import AccountPlanBadge from './AccountPlanBadge.vue'
@@ -26,6 +26,11 @@ const emit = defineEmits<{
 
 const open = defineModel<boolean>({ required: true })
 const apiKey = defineModel<ApiKeyAccountForm>('apiKey', { required: true })
+const oauthTransport = defineModel<ApiKeyAccountForm['transport']>('oauthTransport', { required: true })
+const transportOptions = [
+  { label: 'WS', value: 'prefer_websocket' },
+  { label: 'SSE', value: 'http' },
+]
 const notes = defineModel<string>('notes', { required: true })
 const enabled = defineModel<boolean>('enabled', { required: true })
 const concurrencyLimit = defineModel<string>('concurrencyLimit', { required: true })
@@ -61,6 +66,16 @@ const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: t
         </div>
       </div>
 
+      <BaseFormItem v-if="isOpenAiOAuthAccount(account)" label="上游传输方式">
+        <p v-if="configurationLoading" role="status" class="m-0 text-cp-sm text-cp-text-secondary">
+          正在读取上游设置…
+        </p>
+        <p v-else-if="!configurationReady" role="alert" class="m-0 text-cp-sm text-cp-error">
+          传输方式读取失败，其他设置仍可保存
+        </p>
+        <BaseSegmented v-else v-model="oauthTransport" label="上游传输方式" :options="transportOptions" :disabled="saving" />
+      </BaseFormItem>
+
       <section v-if="isOpenAiApiKeyAccount(account)" class="grid gap-4">
         <h3 class="m-0 text-cp font-heavy text-cp-text">
           上游连接
@@ -85,6 +100,7 @@ const selectedGroupIds = defineModel<string[]>('selectedGroupIds', { required: t
         :groups="groups"
         :groups-loading="groupsLoading"
         :disabled="saving"
+        :show-scheduling="false"
         :endpoint="account.outboundProxyEndpoint"
         :account-id="account.id"
       />
