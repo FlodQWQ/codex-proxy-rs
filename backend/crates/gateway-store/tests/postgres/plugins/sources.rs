@@ -255,6 +255,8 @@ async fn source_proxy_is_revision_fenced_and_referenced_until_the_artifact_is_de
     let saved = proxies
         .create(
             NewProxy {
+                auto_location: false,
+                test: None,
                 location: None,
                 name: "Plugin source".into(),
                 proxy: OutboundProxy::parse("http://127.0.0.1:18080").unwrap(),
@@ -285,6 +287,8 @@ async fn source_proxy_is_revision_fenced_and_referenced_until_the_artifact_is_de
     let updated = proxies
         .update(
             UpdateProxy {
+                auto_location: None,
+                test: None,
                 location: None,
                 id: saved.id.clone(),
                 revision: saved.revision,

@@ -100,7 +100,7 @@ impl gateway_admin::ports::proxy::ProxyStore for TestPluginPorts {
         _: Revision,
         _: gateway_admin::model::proxies::ProxyTestResult,
         _: &MutationContext,
-    ) -> AdminStoreResult<gateway_admin::model::proxies::ProxyRecord> {
+    ) -> AdminStoreResult<gateway_admin::model::proxies::ProxyMutation> {
         Err(unavailable())
     }
 }

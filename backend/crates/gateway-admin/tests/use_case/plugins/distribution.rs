@@ -154,7 +154,7 @@ impl ProxyStore for Fixture {
         _: Revision,
         _: ProxyTestResult,
         _: &MutationContext,
-    ) -> AdminStoreResult<ProxyRecord> {
+    ) -> AdminStoreResult<ProxyMutation> {
         unreachable!()
     }
 }
@@ -532,6 +532,8 @@ fn preview_fixture() -> Fixture {
 fn source_proxy() -> ProxyRecord {
     let now = chrono::Utc::now();
     ProxyRecord {
+        auto_location: false,
+        detected_location: None,
         location: None,
         id: "source-proxy".into(),
         name: "Source proxy".into(),
