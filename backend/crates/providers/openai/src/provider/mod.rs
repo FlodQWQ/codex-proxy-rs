@@ -95,7 +95,7 @@ use crate::transport::{
     CodexBackendJsonResponse, CodexBackendStreamingResponse, CodexBackendTransport,
     CodexClientError, CodexRateLimitUpdates, CodexRequestContext, CodexResponseMetadata,
     CodexResponseMetadataUpdates, CodexTransportMetrics, CodexUpstreamDiagnostics,
-    CodexWebSocketPool, endpoint_url, normalize_non_codex_request_body,
+    CodexWebSocketPool, endpoint_url, normalize_selected_codex_downstream_body,
 };
 
 mod execution;
@@ -692,7 +692,10 @@ impl CodexProvider {
             lease.authentication(),
             crate::credential::CodexRuntimeAuthentication::OAuth(_)
         ) {
-            normalize_non_codex_request_body(upstream_request.body_mut());
+            normalize_selected_codex_downstream_body(
+                upstream_request.body_mut(),
+                generate.protocol_payload().context(),
+            );
         }
         if let Some(location) = lease
             .account()

@@ -793,6 +793,88 @@ async fn replay_compatibility_should_not_apply_codex_rules_to_api_key_accounts()
 }
 
 #[tokio::test]
+async fn grok_downstream_identity_should_only_change_selected_codex_oauth_requests() {
+    let original = "You are Grok released by xAI. Be concise.";
+    let original_body = json!({
+        "model": "gpt-5.4",
+        "store": false,
+        "stream": true,
+        "instructions": "Preserve original instructions.",
+        "input": [{"type": "message", "role": "developer", "content": original}]
+    });
+    for (api_key, marked, expected) in [
+        (false, true, " Be concise."),
+        (false, false, original),
+        (true, true, original),
+    ] {
+        let server = MockServer::start().await;
+        let path = if api_key {
+            "/responses"
+        } else {
+            "/codex/responses"
+        };
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path(path))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(CAPTURE_COMPLETED_SSE, "text/event-stream"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryAccountStore::default());
+        if api_key {
+            store
+                .seed_api_key(
+                    "acct_provider_contract",
+                    server.uri(),
+                    provider_openai::credential::ApiKeyTransport::Http,
+                )
+                .await;
+        } else {
+            create_account(&store, "acct_provider_contract").await;
+        }
+        let mut protocol_context = Map::from_iter([("use_websocket".to_owned(), json!(false))]);
+        if marked {
+            protocol_context.insert(
+                "opaque_request_headers".to_owned(),
+                json!([["X-Grok-Model-Override", "dGVzdA=="]]),
+            );
+        }
+        let payload = ProtocolPayload::json_object(
+            "openai",
+            original_body.as_object().expect("request object").clone(),
+        )
+        .expect("OpenAI payload")
+        .with_context(protocol_context);
+        let mut stream = provider_with_base_url(&store, server.uri())
+            .execute(
+                planned_request(
+                    "openai",
+                    Operation::Generate(GenerateRequest::from_protocol_payload(payload)),
+                ),
+                context("req_grok_boundary", CancellationToken::new()),
+            )
+            .await
+            .expect("request preparation");
+        while let Some(event) = stream.next().await {
+            event.expect("successful upstream completion");
+        }
+        let requests = server.received_requests().await.expect("captured requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            captured_request_body(&requests[0])["input"][0]["content"],
+            expected
+        );
+        if !marked || api_key {
+            let sent = captured_request_body(&requests[0]);
+            for (key, expected) in original_body.as_object().expect("request object") {
+                assert_eq!(sent.get(key), Some(expected), "client field: {key}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn replay_compatibility_should_preserve_non_array_input_without_guessing() {
     for input in [
         Value::Null,
