@@ -380,7 +380,18 @@ pub struct AccountQuotaView {
     pub rate_limited_until: Option<String>,
     pub rate_limit_reason: Option<String>,
     pub recovery_probe_required: bool,
+    pub credits: Option<AccountQuotaCreditsView>,
     pub windows: Vec<AccountQuotaWindowView>,
+}
+
+/// 上游账户 credits 的安全展示摘要。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountQuotaCreditsView {
+    pub has_credits: Option<bool>,
+    pub unlimited: Option<bool>,
+    pub balance: Option<String>,
+    pub balance_display: String,
 }
 
 /// 一个 quota 时间窗口。

@@ -24,6 +24,34 @@ pub struct CodexQuotaFact {
     resets_at: Option<DateTime<Utc>>,
 }
 
+/// 上游 usage 响应里的 credits 展示事实。
+///
+/// 这些字段只用于管理端展示，不参与额度耗尽判定；上游缺少某个字段时保留
+/// `None`，避免把未知余额误报成 0。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexCreditsSnapshot {
+    has_credits: Option<bool>,
+    unlimited: Option<bool>,
+    balance: Option<String>,
+}
+
+impl CodexCreditsSnapshot {
+    #[must_use]
+    pub const fn has_credits(&self) -> Option<bool> {
+        self.has_credits
+    }
+
+    #[must_use]
+    pub const fn unlimited(&self) -> Option<bool> {
+        self.unlimited
+    }
+
+    #[must_use]
+    pub fn balance(&self) -> Option<&str> {
+        self.balance.as_deref()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexQuotaWindowKind {
     ShortTerm,
@@ -114,6 +142,7 @@ pub struct CodexAccountQuotaSnapshot {
     credential_revision: CredentialRevision,
     observed_at: SystemTime,
     plan_type: Option<String>,
+    credits: Option<CodexCreditsSnapshot>,
     fact: CodexQuotaFact,
     quota: QuotaState,
     windows: Vec<CodexQuotaWindow>,
@@ -140,6 +169,11 @@ impl CodexAccountQuotaSnapshot {
     #[must_use]
     pub fn plan_type(&self) -> Option<&str> {
         self.plan_type.as_deref()
+    }
+
+    #[must_use]
+    pub fn credits(&self) -> Option<&CodexCreditsSnapshot> {
+        self.credits.as_ref()
     }
 
     #[must_use]
@@ -336,6 +370,7 @@ pub(crate) fn parse_account_quota_snapshot(
 ) -> Result<CodexAccountQuotaSnapshot, CodexCredentialQuotaError> {
     let object = canonical_quota_object(usage)?;
     let fact = parse_codex_quota_object(&object)?;
+    let credits = parse_credits_snapshot(object.get("credits"))?;
     let mut windows = Vec::new();
     for limit in canonical_rate_limits(&object)? {
         parse_rate_limit_windows(
@@ -365,11 +400,56 @@ pub(crate) fn parse_account_quota_snapshot(
             .get("plan_type")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        credits,
         fact,
         quota,
         windows,
         recovery,
     })
+}
+
+fn parse_credits_snapshot(
+    value: Option<&Value>,
+) -> Result<Option<CodexCreditsSnapshot>, CodexCredentialQuotaError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let object = value
+        .as_object()
+        .ok_or(CodexCredentialQuotaError::InvalidCredentialData)?;
+    let has_credits = object
+        .get("has_credits")
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or(CodexCredentialQuotaError::InvalidCredentialData)
+        })
+        .transpose()?;
+    let unlimited = object
+        .get("unlimited")
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or(CodexCredentialQuotaError::InvalidCredentialData)
+        })
+        .transpose()?;
+    let balance = object
+        .get("balance")
+        .filter(|value| !value.is_null())
+        .map(|value| match value {
+            Value::String(value) => Ok(value.clone()),
+            Value::Number(value) => Ok(value.to_string()),
+            _ => Err(CodexCredentialQuotaError::InvalidCredentialData),
+        })
+        .transpose()?;
+    Ok(Some(CodexCreditsSnapshot {
+        has_credits,
+        unlimited,
+        balance,
+    }))
 }
 
 fn quota_source_order(source: &str) -> u8 {

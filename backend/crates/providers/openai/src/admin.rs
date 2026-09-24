@@ -1093,6 +1093,19 @@ fn project_quota_snapshot(snapshot: CodexAccountQuotaSnapshot) -> ProviderQuota 
         "exhausted".to_owned(),
         Value::Bool(snapshot.quota().is_exhausted()),
     );
+    if let Some(credits) = snapshot.credits() {
+        let mut credits_data = Map::new();
+        if let Some(value) = credits.has_credits() {
+            credits_data.insert("has_credits".to_owned(), Value::Bool(value));
+        }
+        if let Some(value) = credits.unlimited() {
+            credits_data.insert("unlimited".to_owned(), Value::Bool(value));
+        }
+        if let Some(value) = credits.balance() {
+            credits_data.insert("balance".to_owned(), Value::String(value.to_owned()));
+        }
+        provider_data.insert("credits".to_owned(), Value::Object(credits_data));
+    }
     let windows: Vec<ProviderQuotaWindow> = snapshot
         .windows()
         .iter()

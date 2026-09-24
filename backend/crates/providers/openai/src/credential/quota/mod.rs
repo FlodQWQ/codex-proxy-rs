@@ -11,8 +11,8 @@ mod recovery;
 pub(crate) mod snapshot;
 
 pub use snapshot::{
-    CodexAccountQuotaSnapshot, CodexQuotaFact, CodexQuotaWindow, CodexQuotaWindowKind,
-    CodexQuotaWindowRole, parse_codex_quota_usage,
+    CodexAccountQuotaSnapshot, CodexCreditsSnapshot, CodexQuotaFact, CodexQuotaWindow,
+    CodexQuotaWindowKind, CodexQuotaWindowRole, parse_codex_quota_usage,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};

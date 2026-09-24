@@ -25,6 +25,16 @@ const quotaEntries = computed(() => groupedAccountQuotaWindows(
   orderedPanelQuotaWindows(props.account.quota.windows),
 ))
 const profileOpen = shallowRef(false)
+const upstreamCreditsDisplay = computed(() => {
+  const credits = props.account.quota.credits
+  if (!credits)
+    return null
+  if (credits.unlimited === true)
+    return '无限'
+  if (credits.hasCredits === false)
+    return '0'
+  return credits.balanceDisplay || '—'
+})
 </script>
 
 <template>
@@ -46,6 +56,18 @@ const profileOpen = shallowRef(false)
           <span>·</span>
           <span>最近刷新: {{ account.quota.refreshedAtDisplay }}</span>
         </p>
+        <div
+          v-if="upstreamCreditsDisplay"
+          class="mt-2 flex flex-wrap items-center gap-2 text-cp-xs"
+          aria-label="上游 Credits"
+        >
+          <span class="rounded-cp-sm bg-cp-cyan-container px-2 py-1 font-heavy text-cp-cyan-on-container">
+            上游 Credits
+          </span>
+          <strong class="font-mono tabular-nums text-cp-text">
+            {{ upstreamCreditsDisplay }}
+          </strong>
+        </div>
       </div>
       <div v-if="account.authenticationKind !== 'api_key'" class="flex shrink-0 items-center gap-0.5">
         <BaseIconButton

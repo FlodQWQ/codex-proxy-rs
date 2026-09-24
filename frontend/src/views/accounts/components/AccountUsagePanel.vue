@@ -108,8 +108,8 @@ const modelUsageColumns = defineTableColumns<AccountModelUsage>([
               </span>
             </span>
             <span class="mx-0.5 text-[10px] leading-none font-emphasis text-cp-text-quaternary"> / </span>
-            <span title="总计费">
-              <span class="sr-only">总计费：</span>
+            <span title="本周期估算费用">
+              <span class="sr-only">本周期估算费用：</span>
               <span class="font-mono text-cp-sm font-heavy tabular-nums text-cp-green-text">
                 {{ totalBillingDisplay }}
               </span>

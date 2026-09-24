@@ -63,7 +63,10 @@ const triggerLabel = computed(() => {
   }
   return hasSnapshot.value ? `查看主动重置卡，最近查询 ${availableCount.value} 张可用` : '查看主动重置卡'
 })
-const showTriggerCount = computed(() => hasSnapshot.value && availableCount.value > 0)
+const showTriggerCount = computed(() => hasSnapshot.value)
+const triggerText = computed(() => showTriggerCount.value
+  ? `Reset ×${availableCount.value}`
+  : '查询 Reset')
 const confirmCreditTitle = computed(() => consumptionCredit.value
   ? creditTitle(consumptionCredit.value)
   : '使用一次重置（由上游选择）')
@@ -113,16 +116,15 @@ function handleRequestConsume(creditId: string) {
 <template>
   <button
     type="button"
-    class="inline-flex shrink-0 touch-manipulation items-center justify-center rounded-cp border-0 bg-transparent text-cp-text-secondary outline-none transition-[background-color,color,opacity,transform] duration-150 hover:bg-cp-fill-quaternary hover:text-cp-text active:bg-cp-fill-tertiary focus-visible:ring-2 focus-visible:ring-cp-control-outline focus-visible:ring-offset-2 focus-visible:ring-offset-cp-bg-container motion-safe:active:scale-[0.96] motion-reduce:transition-none"
-    :class="showTriggerCount ? 'h-cp-control-sm gap-1 px-2' : 'size-cp-control-sm'"
+    class="inline-flex h-cp-control-sm shrink-0 touch-manipulation items-center justify-center gap-1 rounded-cp border-0 bg-transparent px-2 text-cp-text-secondary outline-none transition-[background-color,color,opacity,transform] duration-150 hover:bg-cp-fill-quaternary hover:text-cp-text active:bg-cp-fill-tertiary focus-visible:ring-2 focus-visible:ring-cp-control-outline focus-visible:ring-offset-2 focus-visible:ring-offset-cp-bg-container motion-safe:active:scale-[0.96] motion-reduce:transition-none"
     :aria-label="triggerLabel"
     :aria-pressed="panelOpen || undefined"
     :title="triggerLabel"
     @click="panelOpen = true"
   >
     <TicketCheck class="size-4 shrink-0" />
-    <span v-if="showTriggerCount" class="translate-y-px font-mono text-[10px] leading-none font-heavy tabular-nums">
-      x{{ availableCount }}
+    <span class="translate-y-px text-cp-xs font-heavy">
+      {{ triggerText }}
     </span>
   </button>
 

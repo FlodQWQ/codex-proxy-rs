@@ -250,6 +250,12 @@ pub(super) fn account_quota_view(
     let refreshed_at_display = quota
         .observed_at
         .map_or_else(|| "—".to_owned(), |value| relative_time(value, now));
+    let credits = quota.credits().map(|credits| AccountQuotaCreditsView {
+        has_credits: credits.has_credits,
+        unlimited: credits.unlimited,
+        balance_display: credits.balance.clone().unwrap_or_else(|| "—".to_owned()),
+        balance: credits.balance,
+    });
     let windows = quota.windows.into_iter().map(quota_window_view).collect();
     let rate_limited_until = cooldown.map(|value| china_datetime(&value.until.into()));
     let rate_limit_reason = cooldown.map(|value| {
@@ -267,6 +273,7 @@ pub(super) fn account_quota_view(
             rate_limited_until,
             rate_limit_reason,
             recovery_probe_required,
+            credits,
             windows,
         },
         refresh_token_expires_at,

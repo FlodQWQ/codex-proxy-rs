@@ -755,6 +755,16 @@ pub struct ProviderQuota {
     pub provider_data: Option<ProviderDocument>,
 }
 
+/// Quota 中供管理端展示的上游 credits 摘要。
+///
+/// 只读取 Provider 投影约定的 `credits` 键，不把整段 Provider-owned JSON 暴露给 API。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderQuotaCredits {
+    pub has_credits: Option<bool>,
+    pub unlimited: Option<bool>,
+    pub balance: Option<String>,
+}
+
 /// 空值和 `unknown` 代表未提供套餐；新的套餐标识仍按明确值保留。
 pub(crate) fn explicit_plan_type(value: Option<&str>) -> Option<&str> {
     value.filter(|value| {
@@ -895,6 +905,26 @@ pub struct ProviderResetCreditResult {
 }
 
 impl ProviderQuota {
+    /// 读取 Provider 投影的 credits 展示事实。
+    #[must_use]
+    pub fn credits(&self) -> Option<ProviderQuotaCredits> {
+        let object = self
+            .provider_data
+            .as_ref()?
+            .expose_to_provider()
+            .expose_to_provider();
+        let credits = object.get("credits")?.as_object()?;
+        Some(ProviderQuotaCredits {
+            has_credits: credits.get("has_credits").and_then(Value::as_bool),
+            unlimited: credits.get("unlimited").and_then(Value::as_bool),
+            balance: credits.get("balance").and_then(|value| match value {
+                Value::String(value) => Some(value.clone()),
+                Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            }),
+        })
+    }
+
     /// 保留账号已有的套餐子类型，仅在缺失时使用上游额度快照补全。
     pub(crate) fn fill_missing_plan_type(&self, account_plan_type: &mut Option<String>) {
         if explicit_plan_type(account_plan_type.as_deref()).is_none() {
