@@ -309,7 +309,6 @@ struct CodexQuotaSchedulingEntry {
     revision: CredentialRevision,
     expires_at: Instant,
     signals: Option<AccountQuotaSignals>,
-    plus_bootstrap_until: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -389,7 +388,6 @@ impl CodexQuotaSchedulingProjection {
             snapshot.credential_revision(),
             remaining_ttl,
             scheduling_signals_from_snapshot(snapshot),
-            snapshot::plus_bootstrap_ttl(snapshot),
         );
         true
     }
@@ -412,7 +410,6 @@ impl CodexQuotaSchedulingProjection {
             target.account.id().clone(),
             target.account.revision(),
             ttl,
-            None,
             None,
         );
     }
@@ -443,7 +440,6 @@ impl CodexQuotaSchedulingProjection {
             snapshot.credential_revision(),
             remaining_ttl,
             scheduling_signals_from_snapshot(snapshot),
-            snapshot::plus_bootstrap_ttl(snapshot),
         );
         true
     }
@@ -454,7 +450,6 @@ impl CodexQuotaSchedulingProjection {
         revision: CredentialRevision,
         ttl: Duration,
         signals: Option<AccountQuotaSignals>,
-        plus_bootstrap_ttl: Option<Duration>,
     ) {
         let mut state = self
             .state
@@ -466,7 +461,6 @@ impl CodexQuotaSchedulingProjection {
             revision,
             ttl,
             signals,
-            plus_bootstrap_ttl,
         );
     }
 
@@ -586,7 +580,6 @@ fn insert_projection_entry(
     revision: CredentialRevision,
     ttl: Duration,
     signals: Option<AccountQuotaSignals>,
-    plus_bootstrap_ttl: Option<Duration>,
 ) {
     state.next_version = state.next_version.saturating_add(1);
     state.entries.insert(
@@ -596,7 +589,6 @@ fn insert_projection_entry(
             revision,
             expires_at: Instant::now() + ttl,
             signals,
-            plus_bootstrap_until: plus_bootstrap_ttl.map(|ttl| Instant::now() + ttl),
         },
     );
 }
@@ -885,27 +877,6 @@ impl CodexCredentialQuotaService {
     #[must_use]
     pub fn scheduling_signals(&self, account: &ProviderAccount) -> Option<AccountQuotaSignals> {
         self.scheduling.signals(account)
-    }
-
-    pub(crate) fn prefers_plus_bootstrap(&self, account: &ProviderAccount) -> bool {
-        if account.authentication_kind() != super::CODEX_AUTHENTICATION_KIND_OAUTH
-            || !account
-                .plan_type()
-                .is_some_and(|plan| plan.eq_ignore_ascii_case("plus"))
-        {
-            return false;
-        }
-        let state = self
-            .scheduling
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now = Instant::now();
-        state.entries.get(account.id()).is_some_and(|entry| {
-            entry.revision == account.revision()
-                && now < entry.expires_at
-                && entry.plus_bootstrap_until.is_some_and(|until| now < until)
-        })
     }
 
     pub(crate) fn invalidate_scheduling(&self, account_ids: &[ProviderAccountId]) {
