@@ -9,7 +9,7 @@ pub mod websocket;
 
 pub use error::{ProtocolError, ProtocolErrorBody, RequestDecodeError, ResponseEncodeError};
 pub(crate) use http::{
-    ResponseAuthorization, ResponsesHttpRequest, execute_prepared_responses,
+    ResponseAuthorization, ResponsesHttpRequest, chat_completions, execute_prepared_responses,
     request_client_context, responses,
 };
 pub use http::{collect_execution_response, stream_execution_response};
