@@ -13,6 +13,8 @@ pub mod key_usage;
 pub mod model_degradation;
 pub mod model_fingerprint;
 pub mod observability;
+pub mod plugin_client_keys;
+pub mod plugins;
 pub mod pricing;
 pub mod provider_credentials;
 pub mod proxies;

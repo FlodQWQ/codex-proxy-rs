@@ -92,6 +92,7 @@ pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> Ac
     let AccountDirectoryItem {
         model_degradation,
         account,
+        capabilities,
         plan_type_display,
         projection,
         usage,
@@ -128,6 +129,7 @@ pub(super) fn account_view(item: AccountDirectoryItem, now: DateTime<Utc>) -> Ac
                 recovered_at: item.recovered_at.as_ref().map(china_rfc3339),
             })
             .collect(),
+        capabilities: capabilities.into(),
         id: account.id.clone(),
         name: account.name,
         notes: account.notes,

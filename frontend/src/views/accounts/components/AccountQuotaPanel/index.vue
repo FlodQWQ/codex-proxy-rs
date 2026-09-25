@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import type { AccountRow } from '../../constants'
-import { RefreshCw, UserRound } from '@lucide/vue'
+import { BaseEmpty, BaseIconButton } from '@codex-proxy/ui'
 
-import { computed, shallowRef } from 'vue'
-import BaseEmpty from '@/components/base/BaseEmpty.vue'
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
+import { RefreshCw, UserRound } from '@lucide/vue'
+import { computed, shallowRef, watch } from 'vue'
+import { formatProviderLabel } from '@/utils/providers'
 import { groupedAccountQuotaWindows, orderedPanelQuotaWindows } from '../../constants'
 import AccountPlanBadge from '../AccountPlanBadge.vue'
 import AccountProfileModal from '../AccountProfileModal/index.vue'
@@ -25,15 +25,11 @@ const quotaEntries = computed(() => groupedAccountQuotaWindows(
   orderedPanelQuotaWindows(props.account.quota.windows),
 ))
 const profileOpen = shallowRef(false)
-const upstreamCreditsDisplay = computed(() => {
-  const credits = props.account.quota.credits
-  if (!credits)
-    return null
-  if (credits.unlimited === true)
-    return '无限'
-  if (credits.hasCredits === false)
-    return '0'
-  return credits.balanceDisplay || '—'
+const hasPersonalInfo = computed(() => props.account.capabilities.profile || props.account.capabilities.subscription)
+const hasActions = computed(() => hasPersonalInfo.value || props.account.capabilities.quotaRefresh || props.account.capabilities.resetCredits)
+watch(hasPersonalInfo, (available) => {
+  if (!available)
+    profileOpen.value = false
 })
 </script>
 
@@ -45,33 +41,21 @@ const upstreamCreditsDisplay = computed(() => {
           账号额度
         </h3>
         <p
-          v-if="account.authenticationKind !== 'api_key'"
+          v-if="account.capabilities.quota || quotaEntries.length > 0"
           class="m-0 mt-1 flex min-w-0 items-center gap-1.5 text-cp-xs font-emphasis text-cp-text-secondary"
         >
-          <span>{{ account.provider === 'xai' ? 'xAI 用量窗口' : 'Codex 额度' }}</span>
-          <template v-if="account.provider === 'openai' && account.authenticationKind === 'oauth'">
+          <span>{{ formatProviderLabel(account.provider) }} 额度</span>
+          <template v-if="account.planType">
             <span>·</span>
             <AccountPlanBadge :plan-type="account.planType" :plan-type-display="account.planTypeDisplay" size="sm" />
           </template>
           <span>·</span>
           <span>最近刷新: {{ account.quota.refreshedAtDisplay }}</span>
         </p>
-        <div
-          v-if="upstreamCreditsDisplay"
-          class="mt-2 flex flex-wrap items-center gap-2 text-cp-xs"
-          aria-label="上游 Credits"
-        >
-          <span class="rounded-cp-sm bg-cp-cyan-container px-2 py-1 font-heavy text-cp-cyan-on-container">
-            上游 Credits
-          </span>
-          <strong class="font-mono tabular-nums text-cp-text">
-            {{ upstreamCreditsDisplay }}
-          </strong>
-        </div>
       </div>
-      <div v-if="account.authenticationKind !== 'api_key'" class="flex shrink-0 items-center gap-0.5">
+      <div v-if="hasActions" class="flex shrink-0 items-center gap-0.5">
         <BaseIconButton
-          v-if="account.provider === 'openai' && account.authenticationKind === 'oauth'"
+          v-if="hasPersonalInfo"
           label="查看个人信息"
           size="sm"
           variant="ghost"
@@ -81,11 +65,12 @@ const upstreamCreditsDisplay = computed(() => {
           <UserRound class="size-3.5" />
         </BaseIconButton>
         <AccountResetCredits
-          v-if="account.provider === 'openai' && account.authenticationKind === 'oauth'"
+          v-if="account.capabilities.resetCredits"
           :account="account"
           @consumed="emit('quotaReset', $event)"
         />
         <BaseIconButton
+          v-if="account.capabilities.quotaRefresh"
           variant="ghost"
           size="sm"
           label="刷新额度"
@@ -101,7 +86,7 @@ const upstreamCreditsDisplay = computed(() => {
       </div>
     </div>
 
-    <div v-if="account.authenticationKind === 'api_key'" class="grid flex-1 place-items-center">
+    <div v-if="!account.capabilities.quota && quotaEntries.length === 0" class="grid flex-1 place-items-center">
       <BaseEmpty title="暂不支持查询上游额度" surface="none" />
     </div>
     <div v-else class="grid min-h-0 gap-3">
@@ -118,7 +103,7 @@ const upstreamCreditsDisplay = computed(() => {
   </section>
 
   <AccountProfileModal
-    v-if="account.provider === 'openai' && account.authenticationKind === 'oauth'"
+    v-if="hasPersonalInfo"
     v-model="profileOpen"
     :account="account"
   />

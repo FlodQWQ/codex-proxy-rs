@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt as _;
 use gateway_admin::model::Revision;
@@ -20,12 +21,12 @@ use gateway_admin::model::provider_credentials::{
     PrepareCredentialRotation, PreparedAuthorizationCommit, PreparedAuthorizationCredential,
     PreparedCredentialCreate, PreparedCredentialImport, PreparedCredentialRotation,
     PreparedCredentialRotationFacts, ProviderDocument, ProviderExport,
-    ProviderExportCredentialInput, ProviderModel, ProviderModels, ProviderProfileActivityInsights,
-    ProviderProfileAvatar, ProviderProfileAvatarStreamError, ProviderProfileDailyUsage,
-    ProviderProfileInvocation, ProviderProfileStatistics, ProviderProfileStatisticsSummary,
-    ProviderQuota, ProviderQuotaRequest, ProviderQuotaWindow, ProviderQuotaWindowRole,
-    ProviderResetCredit, ProviderResetCreditResult, ProviderResetCredits, ProviderSubscription,
-    QuotaLocalUsageAttribution,
+    ProviderExportCredentialInput, ProviderModel, ProviderModelCatalogDocument, ProviderModels,
+    ProviderProfileActivityInsights, ProviderProfileAvatar, ProviderProfileAvatarStreamError,
+    ProviderProfileDailyUsage, ProviderProfileInvocation, ProviderProfileStatistics,
+    ProviderProfileStatisticsSummary, ProviderQuota, ProviderQuotaRequest, ProviderQuotaWindow,
+    ProviderQuotaWindowRole, ProviderResetCredit, ProviderResetCreditResult, ProviderResetCredits,
+    ProviderSubscription, QuotaLocalUsageAttribution,
 };
 use gateway_admin::model::quota_forecast_sampling::QuotaForecastObservation;
 use gateway_admin::ports::provider::{ProviderAdmin, ProviderAdminError, ProviderAdminErrorKind};
@@ -36,7 +37,7 @@ use gateway_core::account::{
 };
 use gateway_core::error::StoreErrorKind;
 use gateway_core::metering::Money;
-use gateway_core::operation::{GenerateRequest, Operation, ProtocolPayload};
+use gateway_core::operation::{GenerateRequest, Operation, ProtocolPayload, RawJsonPayload};
 use gateway_core::provider_ports::{
     NewOAuthPendingFlow, OAuthPendingBinding, OAuthPendingClaimOutcome, OAuthPendingConsumeOutcome,
     OAuthPendingFlowPort, OAuthPendingPutOutcome, OAuthPendingReleaseOutcome, ProviderStoreError,
@@ -73,7 +74,6 @@ const PENDING_DOCUMENT_SCHEMA_VERSION: u64 = 3;
 
 /// OpenAI 对终态 Admin port 的唯一实现。
 pub(crate) struct OpenAiAdminProvider {
-    tickets: Option<Arc<crate::credential::CodexTicketService>>,
     provider_kind: ProviderKind,
     profile: CodexWireProfileState,
     accounts: Arc<dyn ProviderAccountStore>,
@@ -95,13 +95,6 @@ pub(crate) struct OpenAiAdminServices {
 }
 
 impl OpenAiAdminProvider {
-    pub(crate) fn with_tickets(
-        mut self,
-        tickets: Arc<crate::credential::CodexTicketService>,
-    ) -> Self {
-        self.tickets = Some(tickets);
-        self
-    }
     #[must_use]
     pub(crate) fn new(
         provider_kind: ProviderKind,
@@ -113,7 +106,6 @@ impl OpenAiAdminProvider {
     ) -> Self {
         Self {
             provider_kind,
-            tickets: None,
             profile,
             accounts,
             credentials: services.credentials,
@@ -172,20 +164,23 @@ impl OpenAiAdminProvider {
 
 #[async_trait]
 impl ProviderAdmin for OpenAiAdminProvider {
-    async fn codex_tickets(&self) -> Result<Value, ProviderAdminError> {
-        self.tickets
-            .as_ref()
-            .ok_or_else(|| provider_admin_error(ProviderAdminErrorKind::Unsupported))?
-            .view()
-            .await
+    fn account_capabilities(
+        &self,
+        _account_id: &ProviderAccountId,
+        authentication_kind: &str,
+    ) -> gateway_admin::model::accounts::ProviderAccountCapabilities {
+        let oauth = authentication_kind == crate::credential::CODEX_AUTHENTICATION_KIND_OAUTH;
+        gateway_admin::model::accounts::ProviderAccountCapabilities {
+            quota: oauth,
+            quota_refresh: oauth,
+            profile: oauth,
+            subscription: oauth,
+            avatar: oauth,
+            reset_credits: oauth,
+            consume_reset_credit: oauth,
+        }
     }
-    async fn update_codex_tickets(&self, settings: Value) -> Result<Value, ProviderAdminError> {
-        self.tickets
-            .as_ref()
-            .ok_or_else(|| provider_admin_error(ProviderAdminErrorKind::Unsupported))?
-            .update(settings)
-            .await
-    }
+
     fn pricing_catalog(&self) -> gateway_admin::model::pricing::ProviderPricingCatalog {
         crate::transport::usage::pricing_catalog()
     }
@@ -253,7 +248,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
         }
     }
 
-    fn connection_test_operation(
+    async fn connection_test_operation(
         &self,
         upstream_model: &UpstreamModelId,
         input_text: &str,
@@ -452,7 +447,7 @@ impl ProviderAdmin for OpenAiAdminProvider {
 
     async fn start_authorization(
         &self,
-        pending: PendingAuthorizationMutation,
+        pending: gateway_admin::model::provider_credentials::PendingAuthorizationMutation,
     ) -> Result<AuthorizationStarted, ProviderAdminError> {
         if pending.provider_kind() != &self.provider_kind {
             return Err(provider_admin_error(ProviderAdminErrorKind::Invalid));
@@ -501,14 +496,16 @@ impl ProviderAdmin for OpenAiAdminProvider {
             (
                 AuthorizationMutationTarget::Create { .. },
                 CompletedCodexOAuthCredential::Create(credential),
-            ) => {
-                prepared_create(credential, Utc::now()).map(PreparedAuthorizationCredential::Create)
-            }
+            ) => prepared_create(credential, Utc::now())
+                .map(|credential| PreparedAuthorizationCredential::Create(Box::new(credential))),
             (
                 AuthorizationMutationTarget::Reauthorize { .. },
                 CompletedCodexOAuthCredential::Reauthorize(credential),
-            ) => prepared_rotation(credential, mutation.provider_kind().clone())
-                .map(PreparedAuthorizationCredential::Reauthorize),
+            ) => {
+                prepared_rotation(credential, mutation.provider_kind().clone()).map(|credential| {
+                    PreparedAuthorizationCredential::Reauthorize(Box::new(credential))
+                })
+            }
             _ => Err(provider_admin_error(ProviderAdminErrorKind::Internal)),
         };
         let credential = match credential {
@@ -555,6 +552,21 @@ impl ProviderAdmin for OpenAiAdminProvider {
                 )
                 .map_err(map_credential_admin_error)?;
             return prepared_rotation(prepared, command.account.provider_kind);
+        }
+        if command
+            .provider_material
+            .expose_to_provider()
+            .expose_to_provider()
+            .contains_key("transport")
+        {
+            let prepared = CodexCredentialAdmin
+                .prepare_transport_update(
+                    current,
+                    Value::Object(command.provider_material.into_provider_data().into_inner()),
+                )
+                .map_err(map_credential_admin_error)?;
+            return prepared_rotation(prepared, command.account.provider_kind)
+                .map(PreparedCredentialRotation::preserving_credential_state);
         }
         let mut secret = rotation_secret(command.provider_material)?;
         if secret.id_token.is_none() {
@@ -605,23 +617,23 @@ impl ProviderAdmin for OpenAiAdminProvider {
         &self,
         account_id: &ProviderAccountId,
     ) -> Result<Option<ProviderDocument>, ProviderAdminError> {
-        let account = self.account(account_id).await?;
-        if account.authentication_kind() != crate::credential::CODEX_AUTHENTICATION_KIND_API_KEY {
-            return Ok(None);
-        }
+        self.account(account_id).await?;
         let current = self
             .accounts
             .load_current_credential(account_id)
             .await
             .map_err(map_store_error)?;
-        let crate::credential::CodexCredentialData::ApiKey(data) =
-            CodexCredentialCodec::decode_complete(&current.credential)
-                .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Invalid))?
-        else {
-            return Err(provider_admin_error(ProviderAdminErrorKind::Invalid));
+        let data = CodexCredentialCodec::decode_complete(&current.credential)
+            .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Invalid))?;
+        let value = match data {
+            crate::credential::CodexCredentialData::ApiKey(data) => {
+                serde_json::to_value(data.configuration())
+                    .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Internal))?
+            }
+            crate::credential::CodexCredentialData::OAuth(data) => {
+                serde_json::json!({"transport": data.transport})
+            }
         };
-        let value = serde_json::to_value(data.configuration())
-            .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Internal))?;
         let object = value
             .as_object()
             .cloned()
@@ -830,6 +842,40 @@ impl ProviderAdmin for OpenAiAdminProvider {
         })
     }
 
+    async fn model_catalog_document(
+        &self,
+        account_id: &ProviderAccountId,
+    ) -> Result<ProviderModelCatalogDocument, ProviderAdminError> {
+        let account = self.account(account_id).await?;
+        let (models, observed_at) = self
+            .catalog
+            .account_catalog_documents(&account)
+            .await
+            .map_err(map_catalog_error)?;
+        // 只有 Codex 原生对象带齐推理强度、上下文窗口等元数据；API 目录只有模型 ID，
+        // 拼出来的文件不满足 Codex `model_catalog_json` 的加载要求，这里直接拒绝而不降格。
+        let mut entries = Vec::with_capacity(models.len());
+        for model in &models {
+            if model.document().protocol() != "codex" {
+                return Err(provider_admin_error(ProviderAdminErrorKind::Unsupported)
+                    .with_public_message("该账号没有可导出的 Codex 原生模型目录"));
+            }
+            let entry: serde_json::Value = serde_json::from_slice(model.document().body())
+                .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Internal))?;
+            entries.push(entry);
+        }
+        let model_count = entries.len();
+        let body = serde_json::to_vec(&serde_json::json!({ "models": entries }))
+            .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Internal))?;
+        let document = RawJsonPayload::new("codex", Bytes::from(body))
+            .map_err(|_| provider_admin_error(ProviderAdminErrorKind::Internal))?;
+        Ok(ProviderModelCatalogDocument {
+            document,
+            model_count,
+            observed_at: DateTime::<Utc>::from(observed_at),
+        })
+    }
+
     async fn export_credentials(
         &self,
         credentials: Vec<ProviderExportCredentialInput>,
@@ -935,6 +981,7 @@ fn prepared_rotation(
             email: profile.email,
             plan_type: profile.plan_type,
             preserve_profile,
+            preserve_credential_state: false,
             provider_material: ProviderDocument::new(OpaqueProviderData::new(
                 credential.into_inner(),
             )),
@@ -1093,19 +1140,6 @@ fn project_quota_snapshot(snapshot: CodexAccountQuotaSnapshot) -> ProviderQuota 
         "exhausted".to_owned(),
         Value::Bool(snapshot.quota().is_exhausted()),
     );
-    if let Some(credits) = snapshot.credits() {
-        let mut credits_data = Map::new();
-        if let Some(value) = credits.has_credits() {
-            credits_data.insert("has_credits".to_owned(), Value::Bool(value));
-        }
-        if let Some(value) = credits.unlimited() {
-            credits_data.insert("unlimited".to_owned(), Value::Bool(value));
-        }
-        if let Some(value) = credits.balance() {
-            credits_data.insert("balance".to_owned(), Value::String(value.to_owned()));
-        }
-        provider_data.insert("credits".to_owned(), Value::Object(credits_data));
-    }
     let windows: Vec<ProviderQuotaWindow> = snapshot
         .windows()
         .iter()

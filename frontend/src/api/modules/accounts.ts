@@ -28,13 +28,6 @@ export interface AccountQuotaWindow {
   resetAtDisplay: string
 }
 
-export interface AccountQuotaCredits {
-  hasCredits: boolean | null
-  unlimited: boolean | null
-  balance: string | null
-  balanceDisplay: string
-}
-
 export interface AccountQuota {
   refreshedAtDisplay: string
   limitReached: boolean
@@ -42,7 +35,6 @@ export interface AccountQuota {
   rateLimitedUntil: string | null
   rateLimitReason: 'upstream_rate_limit' | 'capacity_freeze' | null
   recoveryProbeRequired: boolean
-  credits: AccountQuotaCredits | null
   windows: AccountQuotaWindow[]
 }
 
@@ -127,7 +119,7 @@ export interface AccountModelAccess {
 }
 
 export interface Account {
-  modelDegradation?: AccountModelDegradation[]
+  capabilities: AccountCapabilities
   outboundProxyEndpoint: string | null
   id: string
   name: string
@@ -162,16 +154,14 @@ export interface Account {
   groups: AccountGroupRef[]
 }
 
-export interface AccountModelDegradation {
-  status: 'degraded' | 'mitigated'
-  requestId: string
-  routingScope: string
-  groupIds: string[]
-  sentModel: string
-  responseModel: string
-  detectedAt: string
-  expiresAt: string
-  recoveredAt: string | null
+export interface AccountCapabilities {
+  quota: boolean
+  quotaRefresh: boolean
+  profile: boolean
+  subscription: boolean
+  avatar: boolean
+  resetCredits: boolean
+  consumeResetCredit: boolean
 }
 
 export interface AccountQuotaForecast {
@@ -319,6 +309,13 @@ export interface AccountModelsResponse {
   models: Array<{ id: string, label: string }>
 }
 
+export interface AccountModelCatalogResponse {
+  modelCount: number
+  observedAt: string
+  /** Codex `model_catalog_json` 的文件正文，原样落盘即可被客户端加载。 */
+  catalog: unknown
+}
+
 export interface AccountImportResponse {
   importedCount: number
   accountIds: string[]
@@ -394,7 +391,7 @@ interface AccountResetCreditConsumeParam extends AccountIdParam {
 }
 
 interface AccountUpdateParam {
-  name?: string
+  connection?: { baseUrl?: string, transport: ApiKeyConfiguration['transport'], apiKey?: string }
   outboundProxyUrl?: string
   outboundProxyId?: string
   accountId: string
@@ -422,7 +419,7 @@ interface AccountDeleteParams {
   accountIds: string[]
 }
 
-interface AccountImportSettings {
+export interface AccountImportSettings {
   notes?: string
   enabled: boolean
   concurrencyLimit: number | null
@@ -569,6 +566,15 @@ export function getAccountModels(data: AccountIdParam, options: RequestOptions =
   })
 }
 
+export function getAccountModelCatalog(data: AccountIdParam, options: RequestOptions = {}) {
+  return request<AccountModelCatalogResponse>({
+    url: '/api/admin/accounts/models/catalog',
+    method: 'GET',
+    params: data,
+    ...options,
+  })
+}
+
 export function refreshAccountModels(data: AccountIdParam, options: RequestOptions = {}) {
   return request<AccountModelsResponse>({
     url: '/api/admin/accounts/models/refresh',
@@ -582,7 +588,7 @@ export function importAccounts(data: AccountImportParam, options: RequestOptions
   return request<AccountImportResponse>({
     url: '/api/admin/accounts/import',
     method: 'POST',
-    data,
+    ...providerInputBody(data),
     ...options,
   })
 }
@@ -591,7 +597,7 @@ export function createAccountImportTask(data: CreateAccountImportTaskParam) {
   return request<AccountImportTask>({
     url: '/api/admin/accounts/import-tasks',
     method: 'POST',
-    data,
+    ...providerInputBody(data),
   })
 }
 
@@ -645,19 +651,26 @@ export function deleteAccounts(data: AccountDeleteParams, options: RequestOption
   })
 }
 
-export function startAccountOAuth(data: AccountOAuthStartParam) {
+export function startAccountOAuth(data: AccountOAuthStartParam, options: RequestOptions = {}) {
   return request<AccountOAuthStartResponse>({
     url: '/api/admin/accounts/oauth/start',
     method: 'POST',
-    data,
+    ...providerInputBody(data),
+    ...options,
   })
 }
 
-export function completeAccountOAuth(data: AccountOAuthCompleteParam) {
+function providerInputBody(data: object) {
+  // Provider 文档是不透明 JSON，先编码，避免 HTTP 客户端合并配置时过滤特殊字段名。
+  return { headers: { 'Content-Type': 'application/json' }, data: JSON.stringify(data) }
+}
+
+export function completeAccountOAuth(data: AccountOAuthCompleteParam, options: RequestOptions = {}) {
   return request<AccountOAuthCompleteResponse>({
     url: '/api/admin/accounts/oauth/complete',
     method: 'POST',
     data,
+    ...options,
   })
 }
 
@@ -667,18 +680,10 @@ export interface ApiKeyConfiguration {
 }
 
 export function getAccountDetail(data: AccountIdParam, options: RequestOptions = {}) {
-  return request<{ account: Account, credentialConfiguration?: ApiKeyConfiguration }>({
+  return request<{ account: Account, credentialConfiguration?: Record<string, unknown> }>({
     url: '/api/admin/accounts/detail',
     method: 'GET',
     params: data,
     ...options,
-  })
-}
-
-export function updateAccountApiKey(data: { accountId: string, baseUrl: string, transport: ApiKeyConfiguration['transport'], apiKey?: string, settings?: AccountUpdateParam }) {
-  return request<{ accountId: string }>({
-    url: '/api/admin/accounts/rotate',
-    method: 'POST',
-    data: { provider: 'openai', ...data },
   })
 }

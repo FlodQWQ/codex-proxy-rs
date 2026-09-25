@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import type { AccountGroup } from '@/api'
-import { Download, ListTodo, Pencil, RefreshCw, Search, Trash2, Upload } from '@lucide/vue'
-import { computed } from 'vue'
+import { BaseButton, BaseInput, BaseSelect } from '@codex-proxy/ui'
 
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
-import BaseInput from '@/components/base/BaseInput.vue'
-import BaseSelect from '@/components/base/BaseSelect.vue'
-import ProviderFilterSegmented from '@/components/ProviderFilterSegmented.vue'
+import { Download, ListTodo, Pencil, Search, Trash2, Upload } from '@lucide/vue'
+import { computed } from 'vue'
+import ProviderFilter from '@/components/ProviderFilter.vue'
 import { accountStatusFilterOptions } from '../constants'
 
 const props = defineProps<{
@@ -16,9 +13,9 @@ const props = defineProps<{
   selectedCount: number
   batchDeleting: boolean
   exportingAccounts: boolean
+  exportDisabledReason: string
   groups: AccountGroup[]
   groupsLoading: boolean
-  loading: boolean
 }>()
 
 const emit = defineEmits<{
@@ -27,7 +24,6 @@ const emit = defineEmits<{
   importTasks: []
   create: []
   editSelected: []
-  refresh: []
 }>()
 
 const search = defineModel<string>('search', { required: true })
@@ -56,8 +52,7 @@ const groupOptions = computed(() => [
       <BaseInput
         v-model="search"
         placeholder="搜索账号"
-        class="col-span-2 min-w-0 sm:col-span-3 xl:w-56 xl:flex-none"
-        aria-label="搜索账号名称或邮箱"
+        class="col-span-2 min-w-0 sm:col-span-3 xl:w-80 xl:flex-none"
       >
         <template #prefix>
           <Search class="size-4.5 text-cp-text-tertiary" />
@@ -79,9 +74,9 @@ const groupOptions = computed(() => [
         class="w-full min-w-0 xl:w-40 xl:shrink-0"
       />
 
-      <ProviderFilterSegmented
+      <ProviderFilter
         v-model="provider"
-        class="col-span-2 w-full sm:col-span-1 xl:w-31 xl:shrink-0"
+        class="col-span-2 w-full sm:col-span-1 xl:w-auto xl:shrink-0"
       />
     </div>
 
@@ -112,6 +107,9 @@ const groupOptions = computed(() => [
         variant="secondary"
         class="w-full whitespace-nowrap xl:w-auto"
         :loading="exportingAccounts"
+        :disabled="Boolean(exportDisabledReason)"
+        :title="exportDisabledReason || undefined"
+        :aria-description="exportDisabledReason || undefined"
         @click="emit('exportSelected')"
       >
         <template #icon>
@@ -127,9 +125,6 @@ const groupOptions = computed(() => [
           <ListTodo class="size-4" />
           导入任务 <span v-if="activeImportCount" class="font-mono text-cp-link">{{ activeImportCount }}</span>
         </BaseButton>
-        <BaseIconButton label="刷新账号列表" variant="secondary" :loading="loading" @click="emit('refresh')">
-          <RefreshCw class="size-4" />
-        </BaseIconButton>
         <slot name="actions" />
         <BaseButton
           variant="primary"

@@ -1,19 +1,19 @@
 <script setup lang="ts">
 import type { AccountRow } from '../constants'
-import { KeyRound, MoreHorizontal, Pencil, RefreshCw, RotateCcw, Trash2, Wifi } from '@lucide/vue'
+import { BaseIconButton, BaseMenuItem, BasePopover } from '@codex-proxy/ui'
 
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
-import BaseMenuItem from '@/components/base/BaseMenuItem.vue'
-import BasePopover from '@/components/base/BasePopover.vue'
+import { Download, KeyRound, MoreHorizontal, Pencil, Power, RefreshCw, RotateCcw, Trash2, Wifi } from '@lucide/vue'
+import { computed } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   account: AccountRow
   deleting: boolean
+  downloadingCatalog: boolean
   recovering: boolean
   refreshing: boolean
   testing: boolean
+  togglingScheduling: boolean
 }>()
-
 const emit = defineEmits<{
   edit: [account: AccountRow]
   delete: [account: AccountRow]
@@ -21,7 +21,11 @@ const emit = defineEmits<{
   test: [account: AccountRow]
   refresh: [accountId: string]
   reauthorize: [account: AccountRow]
+  downloadModelCatalog: [account: AccountRow]
+  toggleScheduling: [account: AccountRow]
 }>()
+
+const credentialEligible = computed(() => props.account.authenticationKind === 'oauth')
 </script>
 
 <template>
@@ -38,12 +42,11 @@ const emit = defineEmits<{
     <BaseIconButton
       variant="ghost"
       size="sm"
-      label="测试连接"
-      :loading="testing"
-      :disabled="testing"
-      @click.stop="emit('test', account)"
+      label="删除账号"
+      :disabled="deleting"
+      @click.stop="emit('delete', account)"
     >
-      <Wifi class="size-3.5 text-cp-success-text" />
+      <Trash2 class="size-3.5 text-cp-error" />
     </BaseIconButton>
 
     <BasePopover placement="bottom-end">
@@ -56,7 +59,27 @@ const emit = defineEmits<{
       <template #default="{ close }">
         <div class="w-40 p-1.5">
           <BaseMenuItem
-            v-if="account.authenticationKind === 'oauth'"
+            :loading="testing"
+            :disabled="testing"
+            @click.stop="(close(), emit('test', account))"
+          >
+            <template #icon>
+              <Wifi class="size-3.5 text-cp-text-quaternary" />
+            </template>
+            测试连接
+          </BaseMenuItem>
+          <BaseMenuItem
+            :loading="togglingScheduling"
+            :disabled="togglingScheduling"
+            @click.stop="(close(), emit('toggleScheduling', account))"
+          >
+            <template #icon>
+              <Power class="size-3.5 text-cp-text-quaternary" />
+            </template>
+            {{ account.enabled ? '停用调度' : '启用调度' }}
+          </BaseMenuItem>
+          <BaseMenuItem
+            v-if="credentialEligible"
             :loading="refreshing"
             :disabled="refreshing"
             @click.stop="(close(), emit('refresh', account.id))"
@@ -69,11 +92,25 @@ const emit = defineEmits<{
             </template>
             刷新令牌
           </BaseMenuItem>
-          <BaseMenuItem v-if="account.authenticationKind === 'oauth'" @click.stop="(close(), emit('reauthorize', account))">
+          <BaseMenuItem v-if="credentialEligible" @click.stop="(close(), emit('reauthorize', account))">
             <template #icon>
               <KeyRound class="size-3.5 text-cp-text-quaternary" />
             </template>
             重新授权
+          </BaseMenuItem>
+          <BaseMenuItem
+            v-if="account.provider === 'openai' && account.authenticationKind === 'oauth'"
+            :loading="downloadingCatalog"
+            :disabled="downloadingCatalog"
+            @click.stop="(close(), emit('downloadModelCatalog', account))"
+          >
+            <template #loading>
+              <RefreshCw class="size-3.5 animate-spin text-cp-text-quaternary motion-reduce:animate-none" />
+            </template>
+            <template #icon>
+              <Download class="size-3.5 text-cp-text-quaternary" />
+            </template>
+            下载模型目录
           </BaseMenuItem>
           <BaseMenuItem
             :loading="recovering"
@@ -84,15 +121,6 @@ const emit = defineEmits<{
               <RotateCcw class="size-3.5 text-cp-text-quaternary" />
             </template>
             恢复状态
-          </BaseMenuItem>
-          <BaseMenuItem
-            :disabled="deleting"
-            @click.stop="(close(), emit('delete', account))"
-          >
-            <template #icon>
-              <Trash2 class="size-3.5 text-cp-error-text" />
-            </template>
-            删除账号
           </BaseMenuItem>
         </div>
       </template>

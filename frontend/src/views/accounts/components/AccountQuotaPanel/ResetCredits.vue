@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import type { Account, AccountResetCredit } from '@/api'
+import { BaseButton, BaseEmpty, BaseIconButton, BaseModal } from '@codex-proxy/ui'
+
 import { AlertTriangle, RefreshCw, TicketCheck } from '@lucide/vue'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc'
 import { computed, shallowRef, watch } from 'vue'
-
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseEmpty from '@/components/base/BaseEmpty.vue'
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
-import BaseModal from '@/components/base/BaseModal/index.vue'
 import { useAccountResetCredits } from '../../composables/useAccountResetCredits'
 import UsageLimits from './UsageLimits.vue'
 
@@ -44,6 +41,7 @@ const {
   confirmConsume,
 } = useAccountResetCredits({
   accountId: () => props.account.id,
+  capabilities: () => props.account.capabilities,
   onConsumed: (accountId) => {
     if (props.account.id === accountId)
       panelOpen.value = false
@@ -109,7 +107,7 @@ function creditTitle(credit: AccountResetCredit | undefined) {
 }
 
 function handleRequestConsume(creditId: string) {
-  if (loading.value || consuming.value || ambiguous.value)
+  if (!props.account.capabilities.consumeResetCredit || loading.value || consuming.value || ambiguous.value)
     return
   selectCredit(creditId)
   requestConsume()
@@ -237,7 +235,7 @@ function handleRequestConsume(creditId: string) {
               <BaseButton
                 size="sm"
                 variant="primary"
-                :disabled="loading || consuming || ambiguous || availableCount <= 0"
+                :disabled="!account.capabilities.consumeResetCredit || loading || consuming || ambiguous || availableCount <= 0"
                 :aria-label="`使用重置：${credit.title}，${credit.expiry}`"
                 @click="handleRequestConsume(credit.id)"
               >
