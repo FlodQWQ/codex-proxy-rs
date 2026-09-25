@@ -342,7 +342,9 @@ export function accountCompactUsageSummary(account: Pick<AccountRow, 'usage' | '
     userCostDisplay,
     estimatedCostDisplay,
     creditsDisplay: account.quota.credits
-      ? account.quota.credits.unlimited ? '无限' : account.quota.credits.balanceDisplay
+      ? account.quota.credits.unlimited
+        ? '无限'
+        : account.quota.credits.hasCredits === false ? '0' : account.quota.credits.balanceDisplay
       : '—',
   }
 }
