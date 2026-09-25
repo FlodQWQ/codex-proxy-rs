@@ -1,7 +1,4 @@
-use std::{
-    io,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use futures::future::BoxFuture;
@@ -40,12 +37,11 @@ impl RequestPolicyPlan for PluginRequestPolicyPlan {
     ) -> BoxFuture<'static, Result<ModelRouteDecision, RequestPolicyFault>> {
         let routers = std::sync::Arc::clone(&self.routers);
         let timeout = self.policy_timeout;
-        let maximum_payload_bytes = self.maximum_payload_bytes;
         Box::pin(async move {
             for entry in routers.iter().filter(|entry| {
                 !input.suppresses_plugin(&entry.instance_id) && entry.scope.matches_route(&input)
             }) {
-                let result = route_with_entry(entry, &input, timeout, maximum_payload_bytes).await;
+                let result = route_with_entry(entry, &input, timeout).await;
                 match result {
                     Ok(ModelRouteDecision::Unhandled) => continue,
                     Ok(decision) => return Ok(decision),
@@ -103,12 +99,11 @@ async fn route_with_entry(
     entry: &ModelRouterEntry,
     input: &ModelRouteInput,
     timeout: Duration,
-    maximum_payload_bytes: usize,
 ) -> Result<ModelRouteDecision, ()> {
     let invocation = entry.invocation.as_ref().ok_or(())?;
     let projection = operation_projection(input.operation())?;
     let payload = if entry.requests_authorized {
-        projection.body.to_bytes(maximum_payload_bytes)?
+        projection.body.to_bytes()?
     } else {
         Vec::new()
     };
@@ -264,15 +259,10 @@ enum OperationBody<'a> {
 }
 
 impl OperationBody<'_> {
-    fn to_bytes(&self, maximum: usize) -> Result<Vec<u8>, ()> {
+    fn to_bytes(&self) -> Result<Vec<u8>, ()> {
         match self {
-            Self::Raw(body) if body.len() <= maximum => Ok(body.to_vec()),
-            Self::Raw(_) => Err(()),
-            Self::Object(body) => {
-                let mut writer = LimitedWriter::new(maximum);
-                serde_json::to_writer(&mut writer, body).map_err(|_| ())?;
-                Ok(writer.into_inner())
-            }
+            Self::Raw(body) => Ok(body.to_vec()),
+            Self::Object(body) => serde_json::to_vec(body).map_err(|_| ()),
         }
     }
 }
@@ -443,43 +433,4 @@ fn system_time_millis(value: Option<SystemTime>) -> Option<u64> {
         .as_millis()
         .try_into()
         .ok()
-}
-
-struct LimitedWriter {
-    bytes: Vec<u8>,
-    maximum: usize,
-}
-
-impl LimitedWriter {
-    fn new(maximum: usize) -> Self {
-        Self {
-            bytes: Vec::new(),
-            maximum,
-        }
-    }
-
-    fn into_inner(self) -> Vec<u8> {
-        self.bytes
-    }
-}
-
-impl io::Write for LimitedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .is_none_or(|length| length > self.maximum)
-        {
-            return Err(io::Error::other(
-                "request body exceeds plugin payload limit",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }

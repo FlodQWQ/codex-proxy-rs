@@ -32,6 +32,28 @@ struct LifecycleCallbacks {
     finished: AtomicUsize,
 }
 
+struct OversizedReplyCallbacks;
+
+impl CallbackHandler for OversizedReplyCallbacks {
+    fn call(
+        &self,
+        _context: CallContext,
+        _method: String,
+        params: serde_json::Value,
+        _payload: Vec<u8>,
+    ) -> BoxFuture<'static, Result<RpcReply, PluginFault>> {
+        Box::pin(async move {
+            if params["error"] == true {
+                return Err(PluginFault::new(ErrorCode::Fault, "x".repeat(64 * 1024)));
+            }
+            Ok(RpcReply {
+                result: json!({"text": "x".repeat(64 * 1024)}),
+                payload: Vec::new(),
+            })
+        })
+    }
+}
+
 struct CallbackDrop(Arc<std::sync::atomic::AtomicBool>);
 
 #[derive(Default)]
@@ -358,6 +380,106 @@ async fn slow_management_call_does_not_block_an_independent_call() {
     assert!(fast.await.is_ok());
     assert!(!slow.is_finished());
     assert!(slow.await.unwrap().is_ok());
+    session.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn large_binary_payload_round_trips_through_calls_and_callbacks() {
+    let callbacks = Arc::new(Callbacks::default());
+    let (_cache, session) = session(vec![], Arc::clone(&callbacks)).await;
+    let payload = (0..4 * 1024 * 1024 + 17)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    for method in ["echo", "callback"] {
+        let reply = session
+            .call(
+                method,
+                session.context(Stage::Request, Duration::from_secs(30)),
+                json!({"large": true}),
+                payload.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.result, json!({"large": true}));
+        assert_eq!(reply.payload, payload);
+    }
+    assert_eq!(callbacks.called.load(Ordering::Relaxed), 1);
+    session.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn oversized_call_frames_do_not_close_the_session_or_begin_callbacks() {
+    let callbacks = Arc::new(LifecycleCallbacks::default());
+    let (_cache, session) = session(vec![], Arc::clone(&callbacks)).await;
+    let cases = [(json!({"text": "x".repeat(64 * 1024)}), vec![])];
+    for (params, payload) in cases {
+        let begun = callbacks.begun.load(Ordering::Relaxed);
+        let error = session
+            .call(
+                "echo",
+                session.context(Stage::Request, Duration::from_secs(2)),
+                params.clone(),
+                payload.clone(),
+            )
+            .await
+            .err()
+            .expect("oversized call must fail");
+        assert_eq!(error, RpcError::Context);
+        assert!(matches!(
+            session
+                .call_stream(
+                    "stream",
+                    session.context(Stage::Request, Duration::from_secs(2)),
+                    params,
+                    payload,
+                )
+                .await,
+            Err(RpcError::Context)
+        ));
+        assert_eq!(callbacks.begun.load(Ordering::Relaxed), begun);
+        assert!(session.is_ready());
+        let reply = session
+            .call(
+                "echo",
+                session.context(Stage::Request, Duration::from_secs(2)),
+                json!({"still": "ready"}),
+                vec![1, 2, 3],
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.result, json!({"still": "ready"}));
+        assert_eq!(reply.payload, [1, 2, 3]);
+    }
+    session.shutdown(Duration::from_secs(1)).await;
+}
+
+#[tokio::test]
+async fn oversized_callback_metadata_only_fails_its_parent_call() {
+    let (_cache, session) = session(vec![], Arc::new(OversizedReplyCallbacks)).await;
+    for error in [false, true] {
+        assert!(matches!(
+            session
+                .call(
+                    "callback",
+                    session.context(Stage::Request, Duration::from_secs(2)),
+                    json!({"error": error}),
+                    vec![],
+                )
+                .await,
+            Err(RpcError::Remote(_))
+        ));
+        assert!(session.is_ready());
+        let reply = session
+            .call(
+                "echo",
+                session.context(Stage::Request, Duration::from_secs(2)),
+                json!({"still": "ready"}),
+                vec![1, 2, 3],
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.payload, [1, 2, 3]);
+    }
     session.shutdown(Duration::from_secs(1)).await;
 }
 

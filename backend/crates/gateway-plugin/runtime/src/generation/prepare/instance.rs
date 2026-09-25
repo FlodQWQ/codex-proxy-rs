@@ -146,7 +146,7 @@ impl PluginRuntime {
         };
         let callbacks = Arc::new(PluginCallbacks::new(
             &grants,
-            self.config.rpc_limits.maximum_frame_bytes,
+            self.config.rpc_limits.maximum_buffered_body_bytes,
             &manifest,
             self.log_slots.clone(),
             private_state.clone(),

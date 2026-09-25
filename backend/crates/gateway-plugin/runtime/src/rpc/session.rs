@@ -11,7 +11,7 @@ use futures::future::BoxFuture;
 use gateway_host::process::{ProcessControl, ProcessSpec, ProcessStartError, ProcessSupervisor};
 use gateway_plugin_sdk::{
     CallContext, Frame, Handshake, Message, PROTOCOL_VERSION, PluginFault,
-    client::{read_frame, write_frame},
+    client::{read_frame, validate_frame, write_frame},
 };
 use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc, oneshot, watch};
 
@@ -21,7 +21,8 @@ use super::dispatch;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RpcLimits {
-    pub maximum_frame_bytes: usize,
+    /// 受管回调与观察队列的缓冲预算，不是请求正文或 IPC 消息总量上限。
+    pub maximum_buffered_body_bytes: usize,
     pub maximum_calls: usize,
     pub maximum_callbacks: usize,
     pub handshake_timeout: Duration,
@@ -32,7 +33,7 @@ pub struct RpcLimits {
 impl Default for RpcLimits {
     fn default() -> Self {
         Self {
-            maximum_frame_bytes: 1024 * 1024,
+            maximum_buffered_body_bytes: 1024 * 1024,
             maximum_calls: 16,
             maximum_callbacks: 16,
             handshake_timeout: Duration::from_secs(5),
@@ -457,8 +458,8 @@ impl RpcSession {
             || limits.maximum_calls > 256
             || limits.maximum_callbacks == 0
             || limits.maximum_callbacks > 256
-            || limits.maximum_frame_bytes < 1024
-            || limits.maximum_frame_bytes > 16 * 1024 * 1024
+            || limits.maximum_buffered_body_bytes < 1024
+            || limits.maximum_buffered_body_bytes > 16 * 1024 * 1024
             || limits.handshake_timeout.is_zero()
             || limits.maximum_call_timeout.is_zero()
         {
@@ -467,6 +468,11 @@ impl RpcSession {
         let manifest = package.package().manifest();
         let plugin_id = manifest.plugin_id().map_err(|_| RpcError::Handshake)?;
         if handshake.protocol_version != PROTOCOL_VERSION
+            || manifest
+                .package
+                .as_ref()
+                .map(|package| package.protocol_version)
+                != Some(handshake.protocol_version)
             || handshake.plugin_id != plugin_id
             || handshake.artifact_sha256 != package.package().digest()
             || handshake.contributes != manifest.contributes
@@ -516,18 +522,22 @@ impl RpcSession {
                 &Frame::control(Message::Hello {
                     handshake: handshake.clone(),
                 }),
-                limits.maximum_frame_bytes,
             )
             .await
             .map_err(|_| RpcError::Handshake)?;
-            let reply = read_frame(&mut output, limits.maximum_frame_bytes)
+            let reply = read_frame(&mut output)
                 .await
                 .map_err(|_| RpcError::Handshake)?;
             match reply.message {
                 Message::Ready {
-                    protocol_version: PROTOCOL_VERSION,
+                    protocol_version,
                     incarnation,
-                } if incarnation == handshake.incarnation && reply.payload.is_empty() => Ok(()),
+                } if protocol_version == handshake.protocol_version
+                    && incarnation == handshake.incarnation
+                    && reply.payload.is_empty() =>
+                {
+                    Ok(())
+                }
                 _ => Err(RpcError::Handshake),
             }
         })
@@ -571,7 +581,6 @@ impl RpcSession {
             Arc::clone(&shared),
             callbacks.clone(),
             handshake.permissions.clone(),
-            limits,
         );
         let monitor = Arc::clone(&shared);
         let instance_id = handshake.instance_id.clone();
@@ -657,7 +666,6 @@ impl RpcSession {
         &self,
         method: &str,
         context: &CallContext,
-        payload: &[u8],
     ) -> Result<tokio::time::Instant, RpcError> {
         if context.instance_id != self.handshake.instance_id
             || context.generation != self.handshake.generation
@@ -666,7 +674,6 @@ impl RpcSession {
             || Duration::from_millis(context.timeout_ms) > self.limits.maximum_call_timeout
             || method.is_empty()
             || method.len() > 128
-            || payload.len() > self.limits.maximum_frame_bytes
         {
             return Err(RpcError::Context);
         }
@@ -717,7 +724,7 @@ impl RpcSession {
         stream: Option<StreamIngress>,
         credit: Option<(u32, u32)>,
     ) -> Result<CompletedCall, RpcError> {
-        let deadline = self.call_deadline(method, &context, &payload)?;
+        let deadline = self.call_deadline(method, &context)?;
         // FIFO 锁同时拥有 ID 与 data 入队顺序；Call/初始 Credit 入队后必须立即释放，
         // 不能把插件回复或重入回调纳入串行区，也不能为等待锁重置调用期限。
         let mut next_call = tokio::time::timeout_at(deadline, self.next_call.lock())
@@ -736,6 +743,8 @@ impl RpcSession {
             },
             payload,
         };
+        // 本地元数据错误不能进入写队列并关闭整个会话。
+        validate_frame(&frame).map_err(|_| RpcError::Context)?;
         let started = self.begin_call(context, deadline, stream)?;
         let mut guard = CallGuard {
             shared: Arc::clone(&self.shared),
@@ -819,7 +828,7 @@ impl RpcSession {
         let slot = Arc::clone(&self.slots)
             .try_acquire_owned()
             .map_err(|_| RpcError::Capacity)?;
-        let bytes = self.limits.maximum_frame_bytes.min(256 * 1024) as u32;
+        let bytes = self.limits.maximum_buffered_body_bytes.min(256 * 1024) as u32;
         let frames = 32;
         let (stream, chunks, terminal) = StreamIngress::new(bytes, frames);
         let completed = self

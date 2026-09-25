@@ -63,7 +63,7 @@ impl ManagementEntry {
             .iter()
             .find(|route| route.method == request.method && route.path == request.path)
             .ok_or_else(|| AdminError::not_found("插件管理路由不存在"))?;
-        let maximum_body = MAXIMUM_BODY_BYTES.min(limits.maximum_frame_bytes.saturating_sub(4096));
+        let maximum_body = MAXIMUM_BODY_BYTES.min(limits.maximum_buffered_body_bytes);
         if request.body.len() > maximum_body
             || request.query.len() > 8192
             || request.query.bytes().any(|byte| byte.is_ascii_control())
@@ -112,8 +112,7 @@ fn decode_response(
         .map_err(|_| AdminError::unavailable("插件管理响应元数据无效"))?;
     if !(200..=599).contains(&response.status)
         || !allowed_content_types.contains(&response.content_type)
-        || reply.payload.len()
-            > MAXIMUM_BODY_BYTES.min(limits.maximum_frame_bytes.saturating_sub(4096))
+        || reply.payload.len() > MAXIMUM_BODY_BYTES.min(limits.maximum_buffered_body_bytes)
         || (matches!(response.status, 204 | 304) && !reply.payload.is_empty())
     {
         return Err(AdminError::unavailable(

@@ -2,19 +2,15 @@ use std::sync::Arc;
 
 use gateway_plugin_sdk::{
     ErrorCode, Frame, Message, Permission, PluginFault, Stage,
-    client::{read_frame, write_frame},
+    client::{read_frame, validate_frame, write_frame},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{mpsc, oneshot},
 };
 
-use super::session::{CallbackHandler, RpcError, RpcLimits, RpcReply, Shared};
+use super::session::{CallbackHandler, RpcError, RpcReply, Shared};
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "双向资源在一个入口交给独立读写任务，不引入重复连接状态"
-)]
 pub(super) fn start<W, R>(
     writer: W,
     reader: R,
@@ -23,19 +19,12 @@ pub(super) fn start<W, R>(
     shared: Arc<Shared>,
     callbacks: Arc<dyn CallbackHandler>,
     permissions: Vec<Permission>,
-    limits: RpcLimits,
 ) where
     W: AsyncWrite + Unpin + Send + 'static,
     R: AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(write_loop(
-        writer,
-        data,
-        control,
-        Arc::clone(&shared),
-        limits.maximum_frame_bytes,
-    ));
-    tokio::spawn(read_loop(reader, shared, callbacks, permissions, limits));
+    tokio::spawn(write_loop(writer, data, control, Arc::clone(&shared)));
+    tokio::spawn(read_loop(reader, shared, callbacks, permissions));
 }
 
 async fn write_loop<W: AsyncWrite + Unpin>(
@@ -43,7 +32,6 @@ async fn write_loop<W: AsyncWrite + Unpin>(
     mut data: mpsc::Receiver<Frame>,
     mut control: mpsc::Receiver<Frame>,
     shared: Arc<Shared>,
-    maximum: usize,
 ) {
     let mut stopped = shared.stopped.subscribe();
     loop {
@@ -73,7 +61,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(
         let written = tokio::select! {
             biased;
             _ = stopped.changed() => return,
-            result = write_frame(&mut writer, &frame, maximum) => result,
+            result = write_frame(&mut writer, &frame) => result,
         };
         if written.is_err() {
             shared.fail(RpcError::Closed);
@@ -87,7 +75,6 @@ async fn read_loop<R: AsyncRead + Unpin>(
     shared: Arc<Shared>,
     callbacks: Arc<dyn CallbackHandler>,
     permissions: Vec<Permission>,
-    limits: RpcLimits,
 ) {
     let mut stopped = shared.stopped.subscribe();
     let mut last_callback = 0;
@@ -98,7 +85,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
         let frame = tokio::select! {
             biased;
             _ = stopped.changed() => return,
-            frame = read_frame(&mut reader, limits.maximum_frame_bytes) => frame,
+            frame = read_frame(&mut reader) => frame,
         };
         let Ok(frame) = frame else {
             shared.fail(RpcError::Closed);
@@ -148,7 +135,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
                                 return;
                             }
                             let result = handler.call(context, method, params, frame.payload).await;
-                            let reply = match result {
+                            let mut reply = match result {
                                 Ok(reply) => Frame {
                                     message: Message::Result {
                                         id,
@@ -158,6 +145,16 @@ async fn read_loop<R: AsyncRead + Unpin>(
                                 },
                                 Err(error) => Frame::control(Message::Error { id, error }),
                             };
+                            // 宿主回调的局部编码错误只能结束该调用，不能关闭共享写通道。
+                            if validate_frame(&reply).is_err() {
+                                reply = Frame::control(Message::Error {
+                                    id,
+                                    error: PluginFault::new(
+                                        ErrorCode::Fault,
+                                        "host callback response cannot be encoded",
+                                    ),
+                                });
+                            }
                             response.send_control(reply);
                             drop(permit);
                         });

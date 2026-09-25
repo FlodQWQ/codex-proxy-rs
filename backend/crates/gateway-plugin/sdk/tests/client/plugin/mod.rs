@@ -28,11 +28,11 @@ use tokio::{
     task::JoinHandle,
 };
 
-const MAXIMUM_FRAME_BYTES: usize = 64 * 1024;
+const MAXIMUM_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
 fn author_manifest(contributes: Value, state: Value) -> Vec<u8> {
     serde_json::to_vec(&json!({
-        "manifestVersion": 3,
+        "manifestVersion": 1,
         "name": "composed",
         "displayName": "Composed",
         "publisher": "9acme",
@@ -333,14 +333,14 @@ async fn start_session<H: PluginHandler + 'static>(
     handler: H,
     contributes: Contributions,
 ) -> (HostPeer, JoinHandle<Result<(), SessionError>>) {
-    let (host, plugin) = tokio::io::duplex(MAXIMUM_FRAME_BYTES * 2);
+    let (host, plugin) = tokio::io::duplex(MAXIMUM_STREAM_CHUNK_BYTES * 2);
     let (plugin_reader, plugin_writer) = tokio::io::split(plugin);
     let task = tokio::spawn(async move {
         PluginSession::accept(
             plugin_reader,
             plugin_writer,
             SessionConfig {
-                maximum_frame_bytes: MAXIMUM_FRAME_BYTES,
+                maximum_stream_chunk_bytes: MAXIMUM_STREAM_CHUNK_BYTES,
                 maximum_calls: 4,
                 maximum_callbacks: 4,
                 maximum_buffered_stream_chunks: 16,
@@ -368,11 +368,10 @@ async fn start_session<H: PluginHandler + 'static>(
                 contributes,
             },
         }),
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
-    let ready = read_frame(&mut reader, MAXIMUM_FRAME_BYTES).await.unwrap();
+    let ready = read_frame(&mut reader).await.unwrap();
     assert!(matches!(
         ready,
         Frame {
@@ -417,20 +416,16 @@ async fn send_call(
             },
             payload,
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
 }
 
 async fn receive(host: &mut HostPeer) -> Frame {
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        read_frame(&mut host.reader, MAXIMUM_FRAME_BYTES),
-    )
-    .await
-    .expect("plugin response timed out")
-    .expect("plugin response frame must be valid")
+    tokio::time::timeout(Duration::from_secs(1), read_frame(&mut host.reader))
+        .await
+        .expect("plugin response timed out")
+        .expect("plugin response frame must be valid")
 }
 
 fn unwrap_result(frame: Frame, expected_id: u64) -> (Value, Vec<u8>) {
@@ -454,13 +449,9 @@ fn assert_invalid_input(frame: Frame, expected_id: u64) {
 }
 
 async fn shutdown(host: &mut HostPeer, task: JoinHandle<Result<(), SessionError>>) {
-    write_frame(
-        &mut host.writer,
-        &Frame::control(Message::Shutdown),
-        MAXIMUM_FRAME_BYTES,
-    )
-    .await
-    .unwrap();
+    write_frame(&mut host.writer, &Frame::control(Message::Shutdown))
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(1), task)
         .await
         .expect("plugin session did not shut down")

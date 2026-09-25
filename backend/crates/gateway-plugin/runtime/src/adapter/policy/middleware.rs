@@ -60,7 +60,6 @@ impl MiddlewarePlan for PluginRequestPolicyPlan {
             context,
             terminal: Some(next),
             timeout: self.middleware_timeout,
-            maximum_payload_bytes: self.maximum_payload_bytes,
         })
         .run(request)
     }
@@ -73,7 +72,6 @@ struct MiddlewareChainNext {
     context: MiddlewareContext,
     terminal: Option<Box<dyn MiddlewareNext>>,
     timeout: Duration,
-    maximum_payload_bytes: usize,
 }
 
 impl MiddlewareNext for MiddlewareChainNext {
@@ -97,7 +95,6 @@ impl MiddlewareNext for MiddlewareChainNext {
                 context: self.context.clone(),
                 terminal: self.terminal.take(),
                 timeout: self.timeout,
-                maximum_payload_bytes: self.maximum_payload_bytes,
             });
             invoke_middleware(
                 &self.entries[entry_index],
@@ -105,7 +102,6 @@ impl MiddlewareNext for MiddlewareChainNext {
                 request,
                 next,
                 self.timeout,
-                self.maximum_payload_bytes,
             )
             .await
         })
@@ -118,7 +114,6 @@ async fn invoke_middleware(
     request: MiddlewareRequest,
     next: Box<dyn MiddlewareNext>,
     maximum_timeout: Duration,
-    maximum_payload_bytes: usize,
 ) -> Result<MiddlewareResponse, MiddlewareError> {
     let Some(invocation_ports) = &entry.invocation else {
         return if entry.failure_policy
@@ -142,9 +137,6 @@ async fn invoke_middleware(
         Ok(projection) => projection,
         Err(_) => return recover_invalid(entry, &invocation).await,
     };
-    if payload.len() > maximum_payload_bytes {
-        return recover_invalid(entry, &invocation).await;
-    }
     let mut call_context = invocation_ports.session.context(
         match entry.mount {
             MiddlewareMount::Request => Stage::Request,

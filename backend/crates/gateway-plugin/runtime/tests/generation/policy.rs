@@ -1149,3 +1149,86 @@ async fn a_failed_middleware_preserves_scope_and_the_configured_failure_policy()
         super::wait_until_empty(cache.path()).await;
     }
 }
+
+struct BodyCheckingNext {
+    calls: Arc<AtomicUsize>,
+    expected: Bytes,
+}
+
+impl MiddlewareNext for BodyCheckingNext {
+    fn run(
+        self: Box<Self>,
+        request: MiddlewareRequest,
+    ) -> BoxFuture<'static, Result<MiddlewareResponse, MiddlewareError>> {
+        Box::pin(async move {
+            assert!(
+                request.body() == &self.expected,
+                "request body changed unexpectedly"
+            );
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(MiddlewareResponse::new(
+                "openai".to_owned(),
+                200,
+                vec![],
+                Box::new(OneFrameBody {
+                    reads: Arc::default(),
+                    closes: Arc::default(),
+                    frame: Some(MiddlewareFrame::new(
+                        Bytes::from_static(b"{}"),
+                        MiddlewareFraming::JsonDocument,
+                        true,
+                    )),
+                }),
+            ))
+        })
+    }
+}
+
+#[tokio::test]
+async fn middleware_preserves_large_body_and_following_requests() {
+    let (cache, runtime) = setup(
+        vec![InstanceFixture {
+            id: "large-body",
+            configuration: serde_json::json!({}),
+            grants: vec![grant(Permission::Requests)],
+            bindings: vec![binding(
+                MIDDLEWARE_CONTRIBUTION,
+                "request",
+                0,
+                PluginFailurePolicy::Reject,
+            )],
+        }],
+        vec![Permission::Requests],
+    )
+    .await;
+    let generation = prepare(&runtime).await;
+    let plan = runtime.middleware_registry().resolve(&generation).unwrap();
+    for length in [4 * 1024 * 1024 + 17, 32] {
+        let payload = Bytes::from(
+            (0..length)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>(),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let response = plan
+            .handle(
+                middleware_context(ClientTransport::HttpSse),
+                MiddlewareRequest::new("openai", vec![], payload.clone()),
+                Box::new(BodyCheckingNext {
+                    calls: Arc::clone(&calls),
+                    expected: payload,
+                }),
+            )
+            .await
+            .unwrap();
+        let (_, status, _, mut body, _) = response.into_parts();
+        assert_eq!(status, 200);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(body.next_frame().await.unwrap().is_some());
+        assert!(body.next_frame().await.unwrap().is_none());
+        body.close().await;
+    }
+    drop(plan);
+    drop(generation);
+    super::wait_until_empty(cache.path()).await;
+}

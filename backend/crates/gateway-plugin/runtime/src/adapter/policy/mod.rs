@@ -236,7 +236,6 @@ pub(crate) struct PluginRequestPolicyPlan {
     middleware: Arc<[MiddlewareEntry]>,
     policy_timeout: Duration,
     middleware_timeout: Duration,
-    maximum_payload_bytes: usize,
 }
 
 impl fmt::Debug for PluginRequestPolicyPlan {
@@ -254,7 +253,6 @@ impl PluginRequestPolicyPlan {
     pub(crate) fn compile(
         entries: Vec<PolicyEntry>,
         maximum_call_timeout: Duration,
-        maximum_frame_bytes: usize,
     ) -> Result<Option<Arc<Self>>, AdminError> {
         let mut routers = Vec::new();
         let mut schedulers = Vec::new();
@@ -304,7 +302,6 @@ impl PluginRequestPolicyPlan {
             middleware: middleware.into(),
             policy_timeout: maximum_call_timeout.min(POLICY_TIMEOUT),
             middleware_timeout: maximum_call_timeout,
-            maximum_payload_bytes: maximum_frame_bytes,
         })))
     }
 

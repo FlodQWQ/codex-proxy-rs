@@ -7,7 +7,7 @@ use serde_json::json;
 
 fn source_manifest() -> Manifest {
     serde_json::from_value(json!({
-        "manifestVersion": 3,
+        "manifestVersion": 1,
         "name": "request-tags",
         "displayName": "请求标签",
         "publisher": "9acme",
@@ -339,7 +339,7 @@ fn contributes_rejects_duplicate_capability_keys_in_direct_json_parsing() {
     }"#;
     let manifest = format!(
         r#"{{
-            "manifestVersion":3,"name":"example","displayName":"Example","publisher":"test",
+            "manifestVersion":1,"name":"example","displayName":"Example","publisher":"test",
             "version":"1.0.0","description":"Example","license":"MIT",
             "engines":{{"codex-proxy-rs":"*"}},"main":"bin/worker","runtime":"trustedProcess",
             "contributes":{{"middleware":{declaration},"middleware":{declaration}}}

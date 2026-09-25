@@ -5,7 +5,7 @@ mod middleware;
 mod plugin;
 mod session;
 
-pub use frame::{read_frame, write_frame};
+pub use frame::{read_frame, validate_frame, write_frame};
 pub use middleware::{
     MiddlewareBody, MiddlewareBodySender, MiddlewareCall, MiddlewareNext, MiddlewarePlugin,
     MiddlewareRequest, MiddlewareResponse,

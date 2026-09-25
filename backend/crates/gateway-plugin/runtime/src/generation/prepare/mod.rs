@@ -450,7 +450,7 @@ impl PluginRuntime {
             observer_entries,
             self.config.rpc_limits.maximum_calls,
             self.config.rpc_limits.maximum_call_timeout,
-            self.config.rpc_limits.maximum_frame_bytes,
+            self.config.rpc_limits.maximum_buffered_body_bytes,
         )
         .map(|plan| {
             self.observers
@@ -461,7 +461,6 @@ impl PluginRuntime {
         let policy_plan = crate::adapter::policy::PluginRequestPolicyPlan::compile(
             policy_entries,
             self.config.rpc_limits.maximum_call_timeout,
-            self.config.rpc_limits.maximum_frame_bytes,
         )?;
         let policies = policy_plan
             .as_ref()

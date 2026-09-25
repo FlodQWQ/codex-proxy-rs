@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::{Capability, Contributions, PROTOCOL_VERSION, Permission, Stage};
 
 /// 当前插件清单格式版本。
-pub const MANIFEST_VERSION: u32 = 3;
+pub const MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

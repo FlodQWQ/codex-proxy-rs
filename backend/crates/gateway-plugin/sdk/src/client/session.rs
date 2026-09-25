@@ -19,16 +19,17 @@ use crate::{
     CallContext, ErrorCode, Frame, FrameError, Handshake, Message, PROTOCOL_VERSION, PluginFault,
 };
 
-use super::frame::{read_frame, validate_frame, validate_message, write_frame};
+use super::frame::{read_frame, validate_frame, write_frame};
 
-const MAXIMUM_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAXIMUM_STREAM_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_CONCURRENCY: usize = 256;
 const MAXIMUM_BUFFERED_STREAM_CHUNKS: usize = 65_536;
 
 /// 插件侧会话的内存、并发与期限边界。
 #[derive(Debug, Clone, Copy)]
 pub struct SessionConfig {
-    pub maximum_frame_bytes: usize,
+    /// 单个业务流分块的预算，不限制普通调用正文的总长度。
+    pub maximum_stream_chunk_bytes: usize,
     pub maximum_calls: usize,
     pub maximum_callbacks: usize,
     pub maximum_buffered_stream_chunks: usize,
@@ -39,8 +40,8 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            // 与宿主默认帧预算一致，避免正文回调以本地较大上限申请后被拒绝。
-            maximum_frame_bytes: 1024 * 1024,
+            // 流分块还需匹配宿主授予的信用窗口。
+            maximum_stream_chunk_bytes: 1024 * 1024,
             maximum_calls: 32,
             maximum_callbacks: 32,
             maximum_buffered_stream_chunks: 1_024,
@@ -52,8 +53,8 @@ impl Default for SessionConfig {
 
 impl SessionConfig {
     fn validate(self) -> Result<Self, SessionError> {
-        if self.maximum_frame_bytes < 1_024
-            || self.maximum_frame_bytes > MAXIMUM_FRAME_BYTES
+        if self.maximum_stream_chunk_bytes < 1_024
+            || self.maximum_stream_chunk_bytes > MAXIMUM_STREAM_CHUNK_BYTES
             || self.maximum_calls == 0
             || self.maximum_calls > MAXIMUM_CONCURRENCY
             || self.maximum_callbacks == 0
@@ -167,12 +168,12 @@ pub struct HostClient {
     cancellation: CallCancellation,
     callbacks: Arc<CallbackRegistry>,
     output: Output,
-    maximum_frame_bytes: usize,
+    maximum_stream_chunk_bytes: usize,
 }
 
 impl HostClient {
-    pub(crate) const fn maximum_frame_bytes(&self) -> usize {
-        self.maximum_frame_bytes
+    pub(crate) const fn maximum_stream_chunk_bytes(&self) -> usize {
+        self.maximum_stream_chunk_bytes
     }
 
     /// 发起一次与父调用关联的宿主回调。
@@ -201,7 +202,7 @@ impl HostClient {
             },
             payload,
         };
-        if validate_frame(&frame, self.maximum_frame_bytes).is_err() {
+        if validate_frame(&frame).is_err() {
             self.callbacks.retire(id);
             return Err(SessionError::Protocol);
         }
@@ -338,7 +339,7 @@ impl ResponseStream {
     fn validate_buffered(
         &self,
         maximum_chunks: usize,
-        maximum_frame_bytes: usize,
+        maximum_stream_chunk_bytes: usize,
         window_bytes: u64,
     ) -> Result<(), PluginFault> {
         if self.declared_capacity > maximum_chunks {
@@ -348,7 +349,7 @@ impl ResponseStream {
         }
         if let StreamSource::Buffered(chunks) = &self.source {
             for chunk in chunks {
-                validate_stream_chunk(chunk, maximum_frame_bytes, window_bytes)?;
+                validate_stream_chunk(chunk, maximum_stream_chunk_bytes, window_bytes)?;
             }
         }
         Ok(())
@@ -411,12 +412,9 @@ where
         config: SessionConfig,
     ) -> Result<Self, SessionError> {
         let config = config.validate()?;
-        let frame = tokio::time::timeout(
-            config.handshake_timeout,
-            read_frame(&mut reader, config.maximum_frame_bytes),
-        )
-        .await
-        .map_err(|_| SessionError::Timeout)??;
+        let frame = tokio::time::timeout(config.handshake_timeout, read_frame(&mut reader))
+            .await
+            .map_err(|_| SessionError::Timeout)??;
         let Message::Hello { handshake } = frame.message else {
             return Err(SessionError::Handshake);
         };
@@ -468,7 +466,6 @@ where
         let output = Output {
             sender: outbound,
             data_slots: Arc::new(Semaphore::new(data_capacity)),
-            maximum_frame_bytes: self.config.maximum_frame_bytes,
         };
         let callbacks = Arc::new(CallbackRegistry::new(self.config.maximum_callbacks));
         let handler: Arc<dyn PluginHandler> = Arc::new(handler);
@@ -479,14 +476,9 @@ where
                 protocol_version: PROTOCOL_VERSION,
                 incarnation: self.handshake.incarnation.clone(),
             }),
-            self.config.maximum_frame_bytes,
         )
         .await?;
-        let writer = tokio::spawn(writer_loop(
-            self.writer,
-            received,
-            self.config.maximum_frame_bytes,
-        ));
+        let writer = tokio::spawn(writer_loop(self.writer, received));
         let (completed, completions) = mpsc::channel(self.config.maximum_calls);
         let mut driver = SessionDriver {
             config: self.config,
@@ -513,7 +505,6 @@ where
 struct Output {
     sender: mpsc::Sender<Outbound>,
     data_slots: Arc<Semaphore>,
-    maximum_frame_bytes: usize,
 }
 
 impl Clone for Output {
@@ -521,14 +512,13 @@ impl Clone for Output {
         Self {
             sender: self.sender.clone(),
             data_slots: Arc::clone(&self.data_slots),
-            maximum_frame_bytes: self.maximum_frame_bytes,
         }
     }
 }
 
 impl Output {
     async fn send_data(&self, frame: Frame) -> Result<(), SessionError> {
-        validate_frame(&frame, self.maximum_frame_bytes)?;
+        validate_frame(&frame)?;
         let permit = Arc::clone(&self.data_slots)
             .acquire_owned()
             .await
@@ -557,7 +547,7 @@ impl Output {
     }
 
     fn send_control(&self, frame: Frame) -> Result<(), SessionError> {
-        validate_frame(&frame, self.maximum_frame_bytes)?;
+        validate_frame(&frame)?;
         self.sender
             .try_send(Outbound {
                 frame,
@@ -575,10 +565,9 @@ struct Outbound {
 async fn writer_loop<W: AsyncWrite + Unpin>(
     mut writer: W,
     mut received: mpsc::Receiver<Outbound>,
-    maximum_frame_bytes: usize,
 ) -> Result<(), SessionError> {
     while let Some(outbound) = received.recv().await {
-        write_frame(&mut writer, &outbound.frame, maximum_frame_bytes).await?;
+        write_frame(&mut writer, &outbound.frame).await?;
     }
     Ok(())
 }
@@ -837,7 +826,7 @@ impl SessionDriver {
     async fn drive<R: AsyncRead + Unpin>(&mut self, mut reader: R) -> Result<(), SessionError> {
         loop {
             // read_exact 不是取消安全的；完成通知可以穿插处理，但必须保留同一个半帧读取 future。
-            let incoming = read_frame(&mut reader, self.config.maximum_frame_bytes);
+            let incoming = read_frame(&mut reader);
             tokio::pin!(incoming);
             let frame = loop {
                 tokio::select! {
@@ -970,7 +959,7 @@ impl SessionDriver {
             cancellation: cancellation_signal.clone(),
             callbacks: Arc::clone(&self.callbacks),
             output: self.output.clone(),
-            maximum_frame_bytes: self.config.maximum_frame_bytes,
+            maximum_stream_chunk_bytes: self.config.maximum_stream_chunk_bytes,
         };
         let call = PluginCall {
             method,
@@ -984,7 +973,7 @@ impl SessionDriver {
         let output = self.output.clone();
         let completed = self.completed.clone();
         let task_credits = Arc::clone(&credits);
-        let maximum_frame_bytes = self.config.maximum_frame_bytes;
+        let maximum_stream_chunk_bytes = self.config.maximum_stream_chunk_bytes;
         let maximum_chunks = self.config.maximum_buffered_stream_chunks;
         let task_context = context.clone();
         let lifecycle = self.lifecycle.clone();
@@ -998,7 +987,7 @@ impl SessionDriver {
                 output,
                 lifecycle,
                 deadline,
-                maximum_frame_bytes,
+                maximum_stream_chunk_bytes,
                 maximum_chunks,
             )
             .await;
@@ -1072,7 +1061,7 @@ async fn run_call(
     output: Output,
     lifecycle: LifecycleHooks,
     deadline: Instant,
-    maximum_frame_bytes: usize,
+    maximum_stream_chunk_bytes: usize,
     maximum_chunks: usize,
 ) -> Result<(), SessionError> {
     let id = context.call_id;
@@ -1095,7 +1084,7 @@ async fn run_call(
         Err(error) => {
             let _ = send_initial(
                 &output,
-                bounded_fault_frame(id, error, maximum_frame_bytes),
+                bounded_fault_frame(id, error),
                 &context,
                 &lifecycle,
                 deadline,
@@ -1112,12 +1101,12 @@ async fn run_call(
         },
         payload: reply.payload,
     };
-    if validate_frame(&initial, maximum_frame_bytes).is_err() {
+    if validate_frame(&initial).is_err() {
         output.send_control(fault_frame(
             id,
             PluginFault::new(
                 ErrorCode::InvalidInput,
-                "plugin response exceeds the frame limit",
+                "plugin response metadata exceeds its limit",
             ),
         ))?;
         return Ok(());
@@ -1147,7 +1136,8 @@ async fn run_call(
         Err(SessionError::Cancelled) => return Ok(()),
         Err(error) => return Err(error),
     };
-    if let Err(fault) = stream.validate_buffered(maximum_chunks, maximum_frame_bytes, window_bytes)
+    if let Err(fault) =
+        stream.validate_buffered(maximum_chunks, maximum_stream_chunk_bytes, window_bytes)
     {
         output.send_control(fault_frame(id, fault))?;
         return Ok(());
@@ -1186,11 +1176,13 @@ async fn run_call(
         let payload = match item {
             Ok(payload) => payload,
             Err(fault) => {
-                output.send_control(bounded_end_frame(id, fault, maximum_frame_bytes))?;
+                output.send_control(bounded_end_frame(id, fault))?;
                 return Ok(());
             }
         };
-        if let Err(fault) = validate_stream_chunk(&payload, maximum_frame_bytes, window_bytes) {
+        if let Err(fault) =
+            validate_stream_chunk(&payload, maximum_stream_chunk_bytes, window_bytes)
+        {
             output.send_control(end_frame(id, Some(fault)))?;
             return Ok(());
         }
@@ -1372,7 +1364,7 @@ impl CreditWindow {
 
 fn validate_stream_chunk(
     payload: &[u8],
-    maximum_frame_bytes: usize,
+    maximum_stream_chunk_bytes: usize,
     window_bytes: u64,
 ) -> Result<(), PluginFault> {
     if payload.is_empty() {
@@ -1387,16 +1379,10 @@ fn validate_stream_chunk(
             "response event exceeds the host stream credit window",
         ));
     }
-    if validate_message(
-        &Message::Stream { id: 1, sequence: 0 },
-        payload.len(),
-        maximum_frame_bytes,
-    )
-    .is_err()
-    {
+    if payload.len() > maximum_stream_chunk_bytes {
         return Err(PluginFault::new(
             ErrorCode::InvalidInput,
-            "response event exceeds the frame limit",
+            "response event exceeds the stream chunk budget",
         ));
     }
     Ok(())
@@ -1414,28 +1400,28 @@ fn end_frame(id: u64, error: Option<PluginFault>) -> Frame {
     Frame::control(Message::End { id, error })
 }
 
-fn bounded_fault_frame(id: u64, error: PluginFault, maximum_frame_bytes: usize) -> Frame {
+fn bounded_fault_frame(id: u64, error: PluginFault) -> Frame {
     let frame = fault_frame(id, error);
-    if validate_frame(&frame, maximum_frame_bytes).is_ok() {
+    if validate_frame(&frame).is_ok() {
         frame
     } else {
         fault_frame(
             id,
-            PluginFault::new(ErrorCode::Fault, "plugin error exceeds the frame limit"),
+            PluginFault::new(ErrorCode::Fault, "plugin error metadata exceeds its limit"),
         )
     }
 }
 
-fn bounded_end_frame(id: u64, error: PluginFault, maximum_frame_bytes: usize) -> Frame {
+fn bounded_end_frame(id: u64, error: PluginFault) -> Frame {
     let frame = end_frame(id, Some(error));
-    if validate_frame(&frame, maximum_frame_bytes).is_ok() {
+    if validate_frame(&frame).is_ok() {
         frame
     } else {
         end_frame(
             id,
             Some(PluginFault::new(
                 ErrorCode::Fault,
-                "plugin stream error exceeds the frame limit",
+                "plugin stream error metadata exceeds its limit",
             )),
         )
     }

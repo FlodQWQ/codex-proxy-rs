@@ -29,7 +29,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-const MAXIMUM_FRAME_BYTES: usize = 64 * 1024;
+const MAXIMUM_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
 #[tokio::test]
 async fn binary_payload_round_trips_without_json_encoding() {
@@ -41,32 +41,72 @@ async fn binary_payload_round_trips_without_json_encoding() {
         payload: vec![0, 255, 13, 10, 128],
     };
     let mut bytes = Vec::new();
-    write_frame(&mut bytes, &frame, 1024).await.unwrap();
+    write_frame(&mut bytes, &frame).await.unwrap();
     assert!(bytes.ends_with(&frame.payload));
-    assert_eq!(
-        read_frame(&mut bytes.as_slice(), 1024).await.unwrap(),
-        frame
-    );
+    assert_eq!(read_frame(&mut bytes.as_slice()).await.unwrap(), frame);
 }
 
 #[tokio::test]
 async fn malicious_lengths_fail_before_reading_or_allocating_payload() {
-    let bytes = [0, 0, 0, 1, 255, 255, 255, 255];
+    let bytes = [0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
     assert!(matches!(
-        read_frame(&mut bytes.as_slice(), 1024).await,
+        read_frame(&mut bytes.as_slice()).await,
         Err(FrameError::Length)
+    ));
+}
+
+#[tokio::test]
+async fn large_payload_is_exact_across_multiple_io_buffers_and_following_frames() {
+    let frame = Frame {
+        message: Message::Result {
+            id: 1,
+            result: json!({}),
+        },
+        payload: (0..101 * 1024 * 1024 + 13)
+            .map(|index| (index % 251) as u8)
+            .collect(),
+    };
+    let next = Frame::control(Message::Cancel { id: 3 });
+    let (mut writer, mut reader) = tokio::io::duplex(16 * 1024);
+    let writing = tokio::spawn(async move {
+        write_frame(&mut writer, &frame).await.unwrap();
+        write_frame(&mut writer, &next).await.unwrap();
+        (frame, next)
+    });
+    let received = read_frame(&mut reader).await.unwrap();
+    let following = read_frame(&mut reader).await.unwrap();
+    let (original, next) = writing.await.unwrap();
+    assert_eq!(received, original);
+    assert_eq!(following, next);
+}
+
+#[tokio::test]
+async fn truncated_large_payload_never_becomes_a_successful_message() {
+    let message = serde_json::to_vec(&Message::Result {
+        id: 1,
+        result: json!({}),
+    })
+    .unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(message.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&(101_u64 * 1024 * 1024).to_be_bytes());
+    bytes.extend_from_slice(&message);
+    bytes.extend_from_slice(&[1, 2, 3]);
+    assert!(matches!(
+        read_frame(&mut bytes.as_slice()).await,
+        Err(FrameError::Io(_))
     ));
 }
 
 #[tokio::test]
 async fn truncated_frame_never_becomes_a_successful_message() {
     let mut bytes = Vec::new();
-    write_frame(&mut bytes, &Frame::control(Message::Cancel { id: 3 }), 1024)
+    write_frame(&mut bytes, &Frame::control(Message::Cancel { id: 3 }))
         .await
         .unwrap();
     bytes.pop();
     assert!(matches!(
-        read_frame(&mut bytes.as_slice(), 1024).await,
+        read_frame(&mut bytes.as_slice()).await,
         Err(FrameError::Io(_))
     ));
 }
@@ -135,10 +175,10 @@ impl PluginHandler for TestHandler {
                 }
                 "oversized_fault" => Err(PluginFault::new(
                     ErrorCode::Upstream,
-                    "x".repeat(MAXIMUM_FRAME_BYTES),
+                    "x".repeat(MAXIMUM_STREAM_CHUNK_BYTES),
                 )),
                 "oversized_result" => Ok(CallReply::unary(
-                    Value::String("x".repeat(MAXIMUM_FRAME_BYTES)),
+                    Value::String("x".repeat(MAXIMUM_STREAM_CHUNK_BYTES)),
                     Vec::new(),
                 )),
                 "dynamic_oversized_fault" => {
@@ -147,7 +187,7 @@ impl PluginHandler for TestHandler {
                         let _ = sender
                             .fail(PluginFault::new(
                                 ErrorCode::Upstream,
-                                "x".repeat(MAXIMUM_FRAME_BYTES),
+                                "x".repeat(MAXIMUM_STREAM_CHUNK_BYTES),
                             ))
                             .await;
                     });
@@ -191,7 +231,7 @@ struct HostPeer {
 async fn start_session<H: PluginHandler>(
     handler: H,
 ) -> (HostPeer, JoinHandle<Result<(), SessionError>>) {
-    start_session_with_capacity(handler, MAXIMUM_FRAME_BYTES * 2).await
+    start_session_with_capacity(handler, MAXIMUM_STREAM_CHUNK_BYTES * 2).await
 }
 
 async fn start_session_with_capacity<H: PluginHandler>(
@@ -205,7 +245,7 @@ async fn start_session_with_capacity<H: PluginHandler>(
             plugin_reader,
             plugin_writer,
             SessionConfig {
-                maximum_frame_bytes: MAXIMUM_FRAME_BYTES,
+                maximum_stream_chunk_bytes: MAXIMUM_STREAM_CHUNK_BYTES,
                 maximum_calls: 4,
                 maximum_callbacks: 4,
                 maximum_buffered_stream_chunks: 16,
@@ -222,11 +262,10 @@ async fn start_session_with_capacity<H: PluginHandler>(
         &Frame::control(Message::Hello {
             handshake: handshake(),
         }),
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
-    let ready = read_frame(&mut reader, MAXIMUM_FRAME_BYTES).await.unwrap();
+    let ready = read_frame(&mut reader).await.unwrap();
     assert!(matches!(
         ready,
         Frame {
@@ -354,7 +393,6 @@ async fn middleware_plugin_registers_without_invoking_business_handler() {
             },
             payload: vec![],
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
@@ -405,7 +443,6 @@ async fn middleware_plugin_rejects_invalid_calls_before_business_dispatch() {
                 },
                 payload,
             },
-            MAXIMUM_FRAME_BYTES,
         )
         .await
         .unwrap();
@@ -511,30 +548,22 @@ async fn send_call_with_timeout(
             },
             payload,
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
 }
 
 async fn send_control(host: &mut HostPeer, message: Message) {
-    write_frame(
-        &mut host.writer,
-        &Frame::control(message),
-        MAXIMUM_FRAME_BYTES,
-    )
-    .await
-    .unwrap();
+    write_frame(&mut host.writer, &Frame::control(message))
+        .await
+        .unwrap();
 }
 
 async fn receive(host: &mut HostPeer) -> Frame {
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        read_frame(&mut host.reader, MAXIMUM_FRAME_BYTES),
-    )
-    .await
-    .expect("plugin response timed out")
-    .expect("plugin response frame must be valid")
+    tokio::time::timeout(Duration::from_secs(1), read_frame(&mut host.reader))
+        .await
+        .expect("plugin response timed out")
+        .expect("plugin response frame must be valid")
 }
 
 async fn shutdown(host: &mut HostPeer, task: JoinHandle<Result<(), SessionError>>) {
@@ -584,9 +613,7 @@ async fn completed_call_does_not_discard_a_partially_read_next_frame() {
         payload: vec![0, 255, 13, 10, 128],
     };
     let mut encoded = Vec::new();
-    write_frame(&mut encoded, &next, MAXIMUM_FRAME_BYTES)
-        .await
-        .unwrap();
+    write_frame(&mut encoded, &next).await.unwrap();
     let payload_start = encoded.len() - next.payload.len();
     for split in [2, 6, 10, payload_start + 2] {
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -646,7 +673,6 @@ async fn host_callback_round_trips_while_parent_call_is_waiting() {
             },
             payload: vec![9],
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
@@ -699,7 +725,6 @@ async fn callbacks_from_concurrent_calls_remain_correlated() {
                 },
                 payload: vec![parent_id as u8],
             },
-            MAXIMUM_FRAME_BYTES,
         )
         .await
         .unwrap();
@@ -734,7 +759,6 @@ async fn middleware_next_and_body_mapping_reuse_callback_and_credit_flow() {
             },
             payload: b"request".to_vec(),
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
@@ -787,7 +811,6 @@ async fn middleware_next_and_body_mapping_reuse_callback_and_credit_flow() {
             },
             payload: Vec::new(),
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
@@ -848,7 +871,6 @@ async fn middleware_next_and_body_mapping_reuse_callback_and_credit_flow() {
             },
             payload: b"data: done\n\n".to_vec(),
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
@@ -891,7 +913,6 @@ async fn middleware_next_and_body_mapping_reuse_callback_and_credit_flow() {
             },
             payload: Vec::new(),
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
@@ -916,7 +937,6 @@ async fn untouched_middleware_response_transfers_opaque_body_without_reading_it(
             },
             payload: b"hidden-by-preserve".to_vec(),
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
@@ -955,7 +975,6 @@ async fn untouched_middleware_response_transfers_opaque_body_without_reading_it(
             },
             payload: Vec::new(),
         },
-        MAXIMUM_FRAME_BYTES,
     )
     .await
     .unwrap();
@@ -992,12 +1011,9 @@ async fn stream_waits_for_credit_and_rejects_uncreditable_buffered_chunk_before_
     let (mut host, task) = start_session(TestHandler::default()).await;
     send_call(&mut host, 1, "stream", json!({}), Vec::new()).await;
     assert!(
-        tokio::time::timeout(
-            Duration::from_millis(25),
-            read_frame(&mut host.reader, MAXIMUM_FRAME_BYTES)
-        )
-        .await
-        .is_err()
+        tokio::time::timeout(Duration::from_millis(25), read_frame(&mut host.reader))
+            .await
+            .is_err()
     );
     send_control(
         &mut host,
@@ -1021,12 +1037,9 @@ async fn stream_waits_for_credit_and_rejects_uncreditable_buffered_chunk_before_
         } if payload == b"abcd"
     ));
     assert!(
-        tokio::time::timeout(
-            Duration::from_millis(25),
-            read_frame(&mut host.reader, MAXIMUM_FRAME_BYTES)
-        )
-        .await
-        .is_err()
+        tokio::time::timeout(Duration::from_millis(25), read_frame(&mut host.reader))
+            .await
+            .is_err()
     );
     send_control(
         &mut host,
@@ -1233,7 +1246,7 @@ async fn oversized_handler_faults_are_replaced_without_closing_the_session() {
                 ref message,
                 ..
             },
-        } if message == "plugin error exceeds the frame limit"
+        } if message == "plugin error metadata exceeds its limit"
     ));
 
     send_call(
@@ -1266,7 +1279,7 @@ async fn oversized_handler_faults_are_replaced_without_closing_the_session() {
                 ref message,
                 ..
             }),
-        } if message == "plugin stream error exceeds the frame limit"
+        } if message == "plugin stream error metadata exceeds its limit"
     ));
 
     send_call(&mut host, 7, "echo", json!("still-ready"), Vec::new()).await;

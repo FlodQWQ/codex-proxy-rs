@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "manifest_schema_versions": [3],
-  "protocol_versions": [4],
+  "manifest_schema_versions": [1],
+  "protocol_versions": [1],
   "capabilities": [
     { "capability": "frontend_authentication", "versions": [1] },
     { "capability": "scheduler", "versions": [1] },

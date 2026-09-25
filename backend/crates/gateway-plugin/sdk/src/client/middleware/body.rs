@@ -100,7 +100,7 @@ impl MiddlewareBody {
         };
         *touched = true;
         let maximum_bytes =
-            u32::try_from(host.maximum_frame_bytes()).map_err(|_| invalid_input())?;
+            u32::try_from(host.maximum_stream_chunk_bytes()).map_err(|_| invalid_input())?;
         let reply = host
             .call(
                 BODY_READ_METHOD,

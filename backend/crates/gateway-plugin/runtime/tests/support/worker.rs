@@ -1026,10 +1026,10 @@ async fn main() {
     tokio::spawn(async move {
         let mut output = tokio::io::stdout();
         while let Some(frame) = frames.recv().await {
-            write_frame(&mut output, &frame, 1024 * 1024).await.unwrap();
+            write_frame(&mut output, &frame).await.unwrap();
         }
     });
-    let hello = read_frame(&mut input, 1024 * 1024).await.unwrap();
+    let hello = read_frame(&mut input).await.unwrap();
     let Message::Hello { mut handshake } = hello.message else {
         panic!("expected handshake")
     };
@@ -1115,7 +1115,7 @@ async fn main() {
     let mut tasks = BTreeMap::new();
     let mut uncancellable = std::collections::BTreeSet::new();
     let mut last_call = 0;
-    while let Ok(frame) = read_frame(&mut input, 1024 * 1024).await {
+    while let Ok(frame) = read_frame(&mut input).await {
         match frame.message {
             Message::Call {
                 id,

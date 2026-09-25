@@ -166,7 +166,7 @@ impl PluginObserverPlan {
         mut entries: Vec<ObserverEntry>,
         maximum_calls: usize,
         maximum_call_timeout: Duration,
-        maximum_frame_bytes: usize,
+        maximum_buffered_body_bytes: usize,
     ) -> Option<Arc<Self>> {
         if entries.is_empty() {
             return None;
@@ -178,8 +178,8 @@ impl PluginObserverPlan {
                 &right.instance_id,
             ))
         });
-        let maximum_websocket_payload_bytes = maximum_frame_bytes
-            .saturating_sub(OBSERVATION_ENVELOPE_RESERVE.min(maximum_frame_bytes));
+        let maximum_websocket_payload_bytes = maximum_buffered_body_bytes
+            .saturating_sub(OBSERVATION_ENVELOPE_RESERVE.min(maximum_buffered_body_bytes));
         Some(Arc::new(Self {
             entries: entries.into(),
             slots: Arc::new(Semaphore::new(maximum_calls)),

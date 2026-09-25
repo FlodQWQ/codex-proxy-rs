@@ -237,7 +237,7 @@ fn assert_packaged_resources(icon_path: &str, icon_mime: &str, icon: &[u8]) {
 
 fn source_manifest() -> &'static [u8] {
     br#"{
-      "manifestVersion":3,
+      "manifestVersion":1,
       "name":"request-workbench",
       "displayName":"Request Workbench",
       "publisher":"codex-proxy",

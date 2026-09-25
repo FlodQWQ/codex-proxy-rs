@@ -59,7 +59,7 @@ fn package_with_icon(path: &str, content_type: &str, icon: Vec<u8>) -> std::sync
     ]);
     let resources = BTreeMap::from([(path.to_owned(), content_type.to_owned())]);
     let manifest = serde_json::json!({
-        "manifestVersion": 3,
+        "manifestVersion": 1,
         "name": "icon",
         "displayName": "Icon",
         "publisher": "test",
@@ -73,7 +73,7 @@ fn package_with_icon(path: &str, content_type: &str, icon: Vec<u8>) -> std::sync
         "resources": resources,
         "icon": path,
         "package": {
-            "protocolVersion": 4,
+            "protocolVersion": 1,
             "target": {
                 "os": std::env::consts::OS,
                 "architecture": std::env::consts::ARCH
@@ -278,7 +278,7 @@ fn icon_content_must_fully_decode_match_its_type_and_fit_dimensions() {
 #[test]
 fn obsolete_manifest_fields_are_rejected_without_aliases() {
     let manifest = serde_json::json!({
-        "manifestVersion": 3,
+        "manifestVersion": 1,
         "name": "example",
         "displayName": "Example",
         "publisher": "test",
@@ -303,7 +303,7 @@ fn obsolete_manifest_fields_are_rejected_without_aliases() {
 #[test]
 fn source_manifest_cannot_be_installed_without_package_metadata() {
     let manifest = serde_json::json!({
-        "manifestVersion": 3,
+        "manifestVersion": 1,
         "name": "example",
         "displayName": "Example",
         "publisher": "test",
@@ -330,7 +330,7 @@ fn source_manifest_cannot_be_installed_without_package_metadata() {
 #[test]
 fn duplicate_contribution_keys_are_rejected_before_map_overwrite() {
     let manifest = br#"{
-        "manifestVersion":3,
+        "manifestVersion":1,
         "name":"example",
         "displayName":"Example",
         "publisher":"test",

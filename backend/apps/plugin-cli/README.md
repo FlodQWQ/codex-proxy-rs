@@ -1,7 +1,7 @@
 # Codex Proxy Plugin CLI
 
 `cpr-plugin` 校验并规范化作者清单、收集声明的资源，生成可安装归档及 SHA-256 校验文件。
-当前输出使用 `manifestVersion: 3`、`protocolVersion: 4` 和 SDK `0.4` 合同。
+当前输出使用 `manifestVersion: 1`、`protocolVersion: 1` 和 SDK `0.1` 合同。
 
 ## 安装
 

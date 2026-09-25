@@ -45,9 +45,6 @@ impl PluginCommandSession {
         }
         let payload = serde_json::to_vec(&invocation)
             .map_err(|_| AdminError::invalid("插件命令参数无法编码"))?;
-        if payload.len() > self.limits.maximum_frame_bytes.saturating_sub(4096) {
-            return Err(AdminError::invalid("插件命令参数超过帧预算").into());
-        }
         let mut saved_accounts = 0;
         let result = tokio::select! {
             biased;
@@ -97,7 +94,8 @@ impl PluginCommand {
             )
             .await
             .map_err(rpc_failure)?;
-        if reply.result != serde_json::json!({}) || reply.payload.len() > limits.maximum_frame_bytes
+        if reply.result != serde_json::json!({})
+            || reply.payload.len() > limits.maximum_buffered_body_bytes
         {
             return Err("结果信封无效");
         }
