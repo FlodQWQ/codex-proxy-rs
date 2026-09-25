@@ -478,6 +478,7 @@ async fn chat_response(session: FakeSession, body: Value) -> axum::response::Res
     let execution = Arc::new(SessionExecution {
         client: authenticated_client_for_provider("sk_correlation_test", "openai"),
         session: Mutex::new(Some(Box::new(session))),
+        middleware: None,
     });
     api_router(execution)
         .await
