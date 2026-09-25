@@ -115,6 +115,38 @@ impl TestDatabase {
 }
 
 #[tokio::test]
+async fn fork_fingerprint_migration_should_upgrade_to_upstream_plugins() {
+    let Some(database) = TestDatabase::create_through("fork_plugin_upgrade", 18).await else {
+        return;
+    };
+    let fingerprint_exists: bool = sqlx::query_scalar(
+        "select to_regclass('provider_account_fingerprint_observations') is not null",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .expect("check fork fingerprint table");
+    let plugin_exists: bool =
+        sqlx::query_scalar("select to_regclass('plugin_instances') is not null")
+            .fetch_one(&database.pool)
+            .await
+            .expect("check plugin table before upgrade");
+    assert!(fingerprint_exists);
+    assert!(!plugin_exists);
+
+    TEST_MIGRATOR
+        .run(&database.pool)
+        .await
+        .expect("upgrade existing fork schema with plugin migration");
+    let plugin_exists: bool =
+        sqlx::query_scalar("select to_regclass('plugin_instances') is not null")
+            .fetch_one(&database.pool)
+            .await
+            .expect("check plugin table after upgrade");
+    assert!(plugin_exists);
+    database.close().await;
+}
+
+#[tokio::test]
 async fn connect_and_migrate_should_apply_all_migrations_once_and_reopen_cleanly() {
     let Some(database_url) = crate::support::test_env("CPR_TEST_DATABASE_URL") else {
         return;
@@ -254,6 +286,7 @@ async fn connect_and_migrate_should_apply_all_migrations_once_and_reopen_cleanly
             "plugin_state_records",
             "plugin_update_sources",
             "plugin_version_configurations",
+            "provider_account_fingerprint_observations",
             "provider_accounts",
             "runtime_settings",
         ]

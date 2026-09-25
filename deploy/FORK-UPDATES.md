@@ -81,6 +81,9 @@ sudo bash update-cpr.sh --apply codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS
 `/opt/codex-proxy-rs/.update-stage-*`，不自动清理。脚本不会覆盖 `deploy/config.yaml`、
 `.runtime`、账号数据或数据库，也不执行数据库恢复。
 更新前请自行备份数据库；程序启动时仍可能执行其自带数据库迁移，文件回滚不等于数据库回滚。
+v3.13.1-Flod-fork.3 起已发布的 `0018_model_fingerprint_observations.sql` 保持原编号与校验和；
+v3.14.1-Flod-fork.1 把上游插件表迁移接在本 fork 的 `0019_plugins.sql`。
+此升级路径面向本 fork 的数据库，不支持将已执行上游 `0018_plugins.sql` 的数据库直接切入本 fork。
 从 v3.12.1-fork.20 升级至 v3.13.1-Flod-fork.1 会执行上游新增的
 `0017_unlimited_default_account_concurrency.sql`，仅放宽默认账号并发上限约束；
 手动回滚程序文件不会回滚数据库，请在安装前备份数据库。

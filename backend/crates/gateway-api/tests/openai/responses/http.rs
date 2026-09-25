@@ -426,11 +426,11 @@ async fn chat_completions_json_recovers_items_from_thin_codex_terminal() {
         vec![
             chat_wire(
                 "response.output_item.done",
-                json!({"output_index":1,"item":{"type":"message","content":[{"type":"output_text","text":"OK"}]}}),
+                json!({"output_index":0,"item":{"type":"message","content":[{"type":"output_text","text":"OK"}]}}),
             ),
             chat_wire(
                 "response.output_item.done",
-                json!({"output_index":2,"item":{"type":"function_call","call_id":"call_1","name":"weather","arguments":"{}"}}),
+                json!({"output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"weather","arguments":"{}"}}),
             ),
             chat_wire(
                 "response.completed",

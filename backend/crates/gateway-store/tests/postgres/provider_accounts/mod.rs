@@ -1491,7 +1491,10 @@ async fn account_display_name_is_trimmed_preserved_and_does_not_mutate_credentia
         outbound_proxy: None,
         model_access: None,
     };
-    store.update_account(command.clone(), &context).await.unwrap();
+    store
+        .update_account(command.clone(), &context)
+        .await
+        .unwrap();
     let after: serde_json::Value =
         sqlx::query_scalar("select to_jsonb(account) from provider_accounts account where id = $1")
             .bind("acct_display_name")
@@ -2074,6 +2077,12 @@ async fn authorization_create_returns_existing_account_id_when_identity_is_upser
     let result = admin_account_store(&database.pool)
         .commit_authorization(
             AuthorizationCommit {
+                key: gateway_admin::model::provider_credentials::AuthorizationReceiptKey::new(
+                    provider_kind.clone(),
+                    "authorization-upsert",
+                    &context,
+                )
+                .expect("authorization receipt key"),
                 settings: Some(gateway_admin::model::accounts::AccountImportSettings {
                     notes: Some("  OAuth 新建备注  ".to_owned()),
                     model_access: Default::default(),
@@ -2089,28 +2098,30 @@ async fn authorization_create_returns_existing_account_id_when_identity_is_upser
                     },
                     AuthorizationOwnerBinding::from_context(&context),
                 ),
-                credential: AuthorizationCredentialCommit::Create(PreparedCredentialCreate {
-                    model_access: Default::default(),
-                    outbound_proxy: None,
-                    account_id: ProviderAccountId::new("acct_authorization_candidate")
-                        .expect("candidate account ID"),
-                    provider_kind,
-                    name: "authorized account".to_owned(),
-                    email: Some("authorized@example.invalid".to_owned()),
-                    upstream_user_id: Some("user-authorization-upsert".to_owned()),
-                    upstream_account_id: None,
-                    plan_type: Some("free".to_owned()),
-                    authentication_kind: "oauth".to_owned(),
-                    provider_material: ProviderDocument::new(OpaqueProviderData::new(
-                        provider_material,
-                    )),
-                    has_refresh_token: true,
-                    access_token_expires_at: Some(Utc::now() + TimeDelta::hours(1)),
-                    next_refresh_at: None,
-                    enabled: true,
-                    credential_state: CredentialState::Ready,
-                    credential_observed_at: Utc::now(),
-                }),
+                credential: AuthorizationCredentialCommit::Create(Box::new(
+                    PreparedCredentialCreate {
+                        model_access: Default::default(),
+                        outbound_proxy: None,
+                        account_id: ProviderAccountId::new("acct_authorization_candidate")
+                            .expect("candidate account ID"),
+                        provider_kind,
+                        name: "authorized account".to_owned(),
+                        email: Some("authorized@example.invalid".to_owned()),
+                        upstream_user_id: Some("user-authorization-upsert".to_owned()),
+                        upstream_account_id: None,
+                        plan_type: Some("free".to_owned()),
+                        authentication_kind: "oauth".to_owned(),
+                        provider_material: ProviderDocument::new(OpaqueProviderData::new(
+                            provider_material,
+                        )),
+                        has_refresh_token: true,
+                        access_token_expires_at: Some(Utc::now() + TimeDelta::hours(1)),
+                        next_refresh_at: None,
+                        enabled: true,
+                        credential_state: CredentialState::Ready,
+                        credential_observed_at: Utc::now(),
+                    },
+                )),
             },
             &context,
         )
@@ -2119,8 +2130,11 @@ async fn authorization_create_returns_existing_account_id_when_identity_is_upser
 
     assert_eq!(
         (
-            result.account_id.as_str(),
-            result.credential_revision.map(|revision| revision.get()),
+            result.result.account_id.as_str(),
+            result
+                .result
+                .credential_revision
+                .map(|revision| revision.get()),
         ),
         ("acct_authorization_existing", Some(2)),
     );
@@ -2158,6 +2172,8 @@ async fn authorization_import_rejects_a_saved_proxy_changed_during_oauth() {
     let saved = proxies
         .create(
             NewProxy {
+                auto_location: false,
+                test: None,
                 location: None,
                 name: "OAuth".to_owned(),
                 proxy: original.clone(),
@@ -2168,6 +2184,7 @@ async fn authorization_import_rejects_a_saved_proxy_changed_during_oauth() {
         .unwrap()
         .record;
     let success = ProxyTestResult {
+        location: Default::default(),
         success: true,
         latency_ms: 1,
         exit_ip: Some("203.0.113.5".parse().unwrap()),
@@ -2183,6 +2200,8 @@ async fn authorization_import_rejects_a_saved_proxy_changed_during_oauth() {
     let edited = proxies
         .update(
             UpdateProxy {
+                auto_location: None,
+                test: None,
                 location: None,
                 id: saved.id.clone(),
                 revision: saved.revision,
@@ -3131,6 +3150,7 @@ pub(super) fn account(id: &str, upstream_user_id: &str) -> NewProviderAccount {
 fn credential_update(account_id: &str, revision: u64, marker: &str) -> ProviderCredentialUpdate {
     ProviderCredentialUpdate {
         preserve_profile: false,
+        preserve_credential_state: false,
         account_id: account_id.to_owned(),
         expected_revision: Revision::new(revision).expect("credential revision"),
         provider_credentials_json: credential_json(marker),
