@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import type { Account } from '@/api'
 import type { ModelFingerprintModel, ModelFingerprintTestResult } from '@/api/modules/model-fingerprint'
+import { BaseButton, BaseCheckbox, BaseFormItem, BaseModal, BaseSelect } from '@codex-proxy/ui'
+
 import { Fingerprint, RefreshCw } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import { getAccounts } from '@/api'
 import { getFingerprintModels, testAccountFingerprint } from '@/api/modules/model-fingerprint'
-import { BaseButton, BaseCheckbox, BaseFormItem, BaseModal, BaseSelect } from '@codex-proxy/ui'
 
 type FingerprintResult = ModelFingerprintTestResult & { error?: string }
 

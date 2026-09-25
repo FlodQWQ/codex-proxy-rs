@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { TicketSettings } from '@/api/modules/codex-tickets'
+import { BaseButton, BaseCheckbox, BaseFormItem, BaseIconButton, BaseInput, BaseModal, BaseSwitch, toast } from '@codex-proxy/ui'
+
 import { RefreshCw } from '@lucide/vue'
 import { onScopeDispose, ref, watch } from 'vue'
 import { getAccounts } from '@/api'
 import request from '@/api/request'
-import { BaseButton, BaseCheckbox, BaseFormItem, BaseIconButton, BaseInput, BaseModal, BaseSwitch, toast } from '@codex-proxy/ui'
 
 const emit = defineEmits<{ saved: [] }>()
 const open = defineModel<boolean>({ required: true })
