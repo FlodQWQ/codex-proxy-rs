@@ -333,6 +333,7 @@ const {
                 :account="row"
                 :refreshing="refreshingQuotaAccountIds.has(row.id) || refreshingQuotas"
                 @refresh-quota="handleRefreshQuota"
+                @quota-reset="handleQuotaReset"
               />
             </template>
 

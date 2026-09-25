@@ -65,8 +65,8 @@ const triggerLabel = computed(() => {
 })
 const showTriggerCount = computed(() => hasSnapshot.value)
 const triggerText = computed(() => showTriggerCount.value
-  ? `Reset ×${availableCount.value}`
-  : '查询 Reset')
+  ? `次数 ${availableCount.value} · 重置`
+  : '查询 · 重置')
 const confirmCreditTitle = computed(() => consumptionCredit.value
   ? creditTitle(consumptionCredit.value)
   : '使用一次重置（由上游选择）')

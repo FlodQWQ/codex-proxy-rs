@@ -1,4 +1,4 @@
-import type { AccountQuotaWindow } from '../../constants'
+import type { AccountQuotaWindow, AccountRow } from '../../constants'
 import { clamp } from 'es-toolkit'
 import { formatInteger } from '@/utils/number'
 import { isRecord } from '@/utils/object'
@@ -279,6 +279,91 @@ export function quotaWindowCostDisplays(window: AccountQuotaWindow) {
       : null,
     multiplier: localUsage.userCostMultiplier,
   }
+}
+
+export interface AccountCompactUsageSummary {
+  visible: boolean
+  requestDisplay: string
+  tokensDisplay: string
+  accountCostDisplay: string | null
+  userCostDisplay: string | null
+  estimatedCostDisplay: string | null
+  creditsDisplay: string
+}
+
+export interface QuotaWindowCompactUsage {
+  visible: boolean
+  requestDisplay: string
+  tokensDisplay: string
+  accountCostDisplay: string | null
+  userCostDisplay: string | null
+  estimatedCostDisplay: string | null
+}
+
+export function quotaWindowCompactUsage(window: AccountQuotaWindow): QuotaWindowCompactUsage {
+  const usage = accountLocalUsage(window.localUsage)
+  const costs = quotaWindowCostDisplays(window)
+  const requestCount = usage?.requestCount ?? 0
+  const tokens = usage?.totalTokens ?? 0
+  return {
+    visible: requestCount > 0 || tokens > 0 || Boolean(costs),
+    requestDisplay: requestCountDisplay(usage),
+    tokensDisplay: localTokenDisplay(usage) || '0',
+    accountCostDisplay: costs?.account ?? null,
+    userCostDisplay: costs?.user ?? null,
+    // “预计”沿用账号侧的本地估算；user 是同一事实的折算展示，不能相加或重复当作额外费用。
+    estimatedCostDisplay: costs?.account || null,
+  }
+}
+
+/**
+ * 用账号列表需要的最小字段构造紧凑用量摘要。
+ * 成本优先使用账号汇总；用户折算成本来自额度窗口的本地估算，避免重复实现解析规则。
+ */
+export function accountCompactUsageSummary(account: Pick<AccountRow, 'usage' | 'quota'>): AccountCompactUsageSummary {
+  const usage = accountLocalUsage(account.usage)
+  const windowCost = account.quota.windows
+    .map(quotaWindowCostDisplays)
+    .find(cost => cost !== null)
+  const accountCost = usage?.costs?.find(item => item.currency.toUpperCase() === 'USD')
+  const accountCostDisplay = accountCost?.estimatedAmountDisplay
+    || windowCost?.account
+    || null
+  const userCostDisplay = windowCost?.user ?? null
+  const estimatedCostDisplay = accountCostDisplay
+  const requestCount = usage?.requestCount ?? 0
+  const totalTokens = usage?.totalTokens ?? 0
+
+  return {
+    visible: requestCount > 0 || totalTokens > 0 || Boolean(accountCostDisplay || userCostDisplay),
+    requestDisplay: requestCountDisplay(usage),
+    tokensDisplay: localTokenDisplay(usage) || '0',
+    accountCostDisplay,
+    userCostDisplay,
+    estimatedCostDisplay,
+    creditsDisplay: account.quota.credits
+      ? account.quota.credits.unlimited ? '无限' : account.quota.credits.balanceDisplay
+      : '—',
+  }
+}
+
+export function quotaResetCountdown(resetAtDisplay: string, now: number) {
+  if (!resetAtDisplay || resetAtDisplay === '—')
+    return null
+  const resetAt = new Date(resetAtDisplay).getTime()
+  if (!Number.isFinite(resetAt))
+    return null
+  const remainingSeconds = Math.max(0, Math.ceil((resetAt - now) / 1_000))
+  if (remainingSeconds <= 0)
+    return '已到期'
+  const days = Math.floor(remainingSeconds / 86_400)
+  const hours = Math.floor((remainingSeconds % 86_400) / 3_600)
+  const minutes = Math.floor((remainingSeconds % 3_600) / 60)
+  if (days > 0)
+    return `${days}天${hours}小时后`
+  if (hours > 0)
+    return `${hours}小时${minutes}分后`
+  return `${Math.max(1, minutes)}分钟后`
 }
 
 function requestCountDisplay(localUsage: AccountLocalUsage | null) {
