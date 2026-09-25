@@ -300,21 +300,6 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
             .await
             .is_err()
     );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        for path in [
-            fixture.root.path().join(".fork-update-backup"),
-            fixture.root.path().join(".fork-update-backup/plugins"),
-            fixture.root.path().join("plugins"),
-        ] {
-            eprintln!(
-                "rollback parent {}: {:o}",
-                path.display(),
-                fs::metadata(&path).unwrap().permissions().mode() & 0o777
-            );
-        }
-    }
     service
         .rollback(Arc::new(AllowingUpdatePreflight))
         .await
@@ -324,6 +309,23 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
         fs::read(fixture.official().join("plugin-release-manifest.json")).unwrap(),
         b"old-manifest"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(
+                fixture
+                    .root
+                    .path()
+                    .join(".fork-update-backup/plugins/official")
+            )
+            .unwrap()
+            .permissions()
+            .mode()
+                & 0o777,
+            0o555
+        );
+    }
     assert!(
         fixture
             .root

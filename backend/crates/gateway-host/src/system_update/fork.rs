@@ -347,6 +347,31 @@ pub(super) fn rollback(config: &SystemUpdateConfig) -> Result<(), OperationError
             return Err(conflict("定制包备份不完整"));
         }
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let official = &current[FILES.len() + 1];
+        let original = fs::metadata(official)
+            .map_err(|error| internal(format!("读取官方插件目录权限失败: {error}")))?
+            .permissions();
+        fs::set_permissions(official, fs::Permissions::from_mode(0o755))
+            .map_err(|error| internal(format!("准备官方插件目录回滚失败: {error}")))?;
+        if let Err(error) = exchange(&current, &replacements) {
+            fs::set_permissions(official, original)
+                .map_err(|restore| internal(format!("{error}; 恢复官方插件权限失败: {restore}")))?;
+            return Err(error);
+        }
+        if let Err(error) = fs::set_permissions(&replacements[FILES.len() + 1], original.clone()) {
+            let reverted = exchange(&current, &replacements);
+            let restored = fs::set_permissions(official, original);
+            return Err(internal(format!(
+                "恢复备份官方插件权限失败: {error}; 回退交换: {reverted:?}; 恢复权限: {restored:?}"
+            )));
+        }
+        return Ok(());
+    }
+    #[cfg(not(unix))]
     exchange(&current, &replacements)
 }
 
