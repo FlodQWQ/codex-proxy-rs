@@ -232,7 +232,7 @@ async fn periodic_refresh_includes_idle_and_disabled_oauth_accounts_and_is_throt
         .seed_api_key(
             "acct_api",
             "https://example.invalid".to_owned(),
-            provider_openai::credential::ApiKeyTransport::Http,
+            provider_openai::credential::ResponsesTransport::Http,
         )
         .await;
     let server = MockServer::start().await;
