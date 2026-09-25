@@ -311,7 +311,7 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
             eprintln!(
                 "rollback parent {}: {:o}",
                 path.display(),
-                fs::metadata(path).unwrap().permissions().mode() & 0o777
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777
             );
         }
     }
