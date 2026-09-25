@@ -39,7 +39,10 @@ export const accountColumns = defineTableColumns<AccountRow>([
   { key: 'status', label: '状态', kind: 'status', size: 'md', align: 'left', sortable: true },
   { key: 'scheduling', label: '调度', kind: 'custom', size: 'sm', align: 'center' },
   { key: 'planType', label: '套餐', kind: 'status', sortable: true, defaultHidden: true },
-  { key: 'usage', label: '用量', kind: 'custom', size: 'xl', sortable: true },
+  // The quota summary carries two windows plus local cost/reset controls; keep
+  // enough horizontal room for the same compact layout used by the upstream
+  // account page instead of forcing every badge onto a new line.
+  { key: 'usage', label: '用量', kind: 'custom', size: '4xl', sortable: true },
   { key: 'concurrency', label: '并发 / 权重', kind: 'custom', size: 'sm', align: 'center' },
   { key: 'outboundProxyEndpoint', label: '代理', kind: 'mono', size: 'xl', defaultHidden: true },
   {

@@ -25,9 +25,9 @@ interface AccountLocalUsage {
   totalTokens?: number
   totalTokensDisplay?: string
   costEstimateStatus?: string
-  costs?: Array<{ currency: string, estimatedAmountDisplay: string }>
+  costs?: Array<{ currency: string, estimatedAmount: string | null, estimatedAmountDisplay: string }>
   userCostMultiplier?: string
-  userCosts?: Array<{ currency: string, estimatedAmountDisplay: string }>
+  userCosts?: Array<{ currency: string, estimatedAmount: string | null, estimatedAmountDisplay: string }>
   requestBuckets?: AccountRequestBucket[]
 }
 
@@ -206,7 +206,11 @@ function currencyCosts(value: unknown[]) {
   return value.flatMap((cost) => {
     if (!isRecord(cost) || typeof cost.currency !== 'string' || typeof cost.estimatedAmountDisplay !== 'string')
       return []
-    return [{ currency: cost.currency, estimatedAmountDisplay: cost.estimatedAmountDisplay }]
+    return [{
+      currency: cost.currency,
+      estimatedAmount: typeof cost.estimatedAmount === 'string' ? cost.estimatedAmount : null,
+      estimatedAmountDisplay: cost.estimatedAmountDisplay,
+    }]
   })
 }
 
@@ -297,7 +301,7 @@ export interface QuotaWindowCompactUsage {
   tokensDisplay: string
   accountCostDisplay: string | null
   userCostDisplay: string | null
-  estimatedCostDisplay: string | null
+  estimatedTotalCostDisplay: string | null
 }
 
 export function quotaWindowCompactUsage(window: AccountQuotaWindow): QuotaWindowCompactUsage {
@@ -305,14 +309,19 @@ export function quotaWindowCompactUsage(window: AccountQuotaWindow): QuotaWindow
   const costs = quotaWindowCostDisplays(window)
   const requestCount = usage?.requestCount ?? 0
   const tokens = usage?.totalTokens ?? 0
+  const accountCost = usage?.costs?.find(item => item.currency.toUpperCase() === 'USD')
+  const estimatedTotalCostDisplay = estimateQuotaWindowTotalCost(
+    window,
+    accountCost?.estimatedAmount,
+    accountCost?.estimatedAmountDisplay,
+  )
   return {
     visible: requestCount > 0 || tokens > 0 || Boolean(costs),
     requestDisplay: requestCountDisplay(usage),
     tokensDisplay: localTokenDisplay(usage) || '0',
     accountCostDisplay: costs?.account ?? null,
     userCostDisplay: costs?.user ?? null,
-    // “预计”沿用账号侧的本地估算；user 是同一事实的折算展示，不能相加或重复当作额外费用。
-    estimatedCostDisplay: costs?.account || null,
+    estimatedTotalCostDisplay,
   }
 }
 
@@ -362,10 +371,31 @@ export function quotaResetCountdown(resetAtDisplay: string, now: number) {
   const hours = Math.floor((remainingSeconds % 86_400) / 3_600)
   const minutes = Math.floor((remainingSeconds % 3_600) / 60)
   if (days > 0)
-    return `${days}天${hours}小时后`
+    return `${days}d ${hours}h`
   if (hours > 0)
-    return `${hours}小时${minutes}分后`
-  return `${Math.max(1, minutes)}分钟后`
+    return `${hours}h ${minutes}m`
+  return `${Math.max(1, minutes)}m`
+}
+
+function estimateQuotaWindowTotalCost(
+  window: AccountQuotaWindow,
+  amount: string | null | undefined,
+  amountDisplay: string | undefined,
+) {
+  // The upstream account page only projects the rolling 7-day window. Keep the
+  // estimate conservative and avoid presenting a misleading total for 5h or
+  // unknown windows.
+  if (window.windowSeconds !== 604_800 || typeof window.usedPercent !== 'number' || window.usedPercent <= 0)
+    return null
+  const currentCost = Number(amount)
+  if (!Number.isFinite(currentCost) || currentCost <= 0)
+    return null
+  const estimate = currentCost * 100 / window.usedPercent
+  if (!Number.isFinite(estimate) || estimate <= 0)
+    return null
+
+  const currencyPrefix = amountDisplay?.trim().startsWith('$') ? '$' : ''
+  return `${currencyPrefix}${estimate.toFixed(2)}`
 }
 
 function requestCountDisplay(localUsage: AccountLocalUsage | null) {

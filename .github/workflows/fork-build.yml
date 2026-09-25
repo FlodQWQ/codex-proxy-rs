@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FORK_RELEASE_SEQUENCE: '6'
+  FORK_RELEASE_SEQUENCE: '7'
   MODELTRACE_REVISION: '55a2e4a55170423b484d701e9a82ab62b268c811'
 
 jobs:

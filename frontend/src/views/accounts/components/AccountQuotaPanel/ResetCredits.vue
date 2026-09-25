@@ -12,9 +12,12 @@ import BaseModal from '@/components/base/BaseModal/index.vue'
 import { useAccountResetCredits } from '../../composables/useAccountResetCredits'
 import UsageLimits from './UsageLimits.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   account: Account
-}>()
+  compact?: boolean
+}>(), {
+  compact: false,
+})
 
 const emit = defineEmits<{
   consumed: [accountId: string]
@@ -66,7 +69,7 @@ const triggerLabel = computed(() => {
 const showTriggerCount = computed(() => hasSnapshot.value)
 const triggerText = computed(() => showTriggerCount.value
   ? `次数 ${availableCount.value} · 重置`
-  : '查询 · 重置')
+  : '次数 · 重置')
 const confirmCreditTitle = computed(() => consumptionCredit.value
   ? creditTitle(consumptionCredit.value)
   : '使用一次重置（由上游选择）')
@@ -116,13 +119,15 @@ function handleRequestConsume(creditId: string) {
 <template>
   <button
     type="button"
-    class="inline-flex h-cp-control-sm shrink-0 touch-manipulation items-center justify-center gap-1 rounded-cp border-0 bg-transparent px-2 text-cp-text-secondary outline-none transition-[background-color,color,opacity,transform] duration-150 hover:bg-cp-fill-quaternary hover:text-cp-text active:bg-cp-fill-tertiary focus-visible:ring-2 focus-visible:ring-cp-control-outline focus-visible:ring-offset-2 focus-visible:ring-offset-cp-bg-container motion-safe:active:scale-[0.96] motion-reduce:transition-none"
+    class="inline-flex h-cp-control-sm shrink-0 touch-manipulation items-center justify-center gap-0.5 rounded-cp border-0 bg-transparent px-1.5 outline-none transition-[background-color,color,opacity,transform] duration-150 hover:bg-cp-fill-quaternary hover:text-cp-text active:bg-cp-fill-tertiary focus-visible:ring-2 focus-visible:ring-cp-control-outline focus-visible:ring-offset-2 focus-visible:ring-offset-cp-bg-container motion-safe:active:scale-[0.96] motion-reduce:transition-none"
+    :class="compact ? 'text-cp-warning-text' : 'text-cp-text-secondary'"
     :aria-label="triggerLabel"
     :aria-pressed="panelOpen || undefined"
     :title="triggerLabel"
     @click="panelOpen = true"
   >
-    <TicketCheck class="size-4 shrink-0" />
+    <RefreshCw v-if="compact" class="size-3 shrink-0" />
+    <TicketCheck v-else class="size-4 shrink-0" />
     <span class="translate-y-px text-cp-xs font-heavy">
       {{ triggerText }}
     </span>
