@@ -126,7 +126,11 @@ fn exchange(current: &[PathBuf], replacement: &[PathBuf]) -> Result<(), Operatio
                 }
             }
             return Err(internal(format!(
-                "整包替换失败: {error}; 恢复错误: {failures:?}"
+                "整包替换失败({}): {error}; 恢复错误: {failures:?}",
+                current[index]
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("unknown")
             )));
         }
     }
