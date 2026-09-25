@@ -272,6 +272,18 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
         fs::read(fixture.official().join("plugin-release-manifest.json")).unwrap(),
         b"fork-manifest"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(fixture.official())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o555
+        );
+    }
     assert!(
         fixture
             .root

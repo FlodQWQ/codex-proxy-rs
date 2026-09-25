@@ -286,12 +286,6 @@ pub(super) fn install(
     copy_dir_all(&web, &staged[FILES.len()]).map_err(|error| internal(error.to_string()))?;
     copy_dir_all(&official_plugins, &staged[FILES.len() + 1])
         .map_err(|error| internal(error.to_string()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&staged[FILES.len() + 1], fs::Permissions::from_mode(0o555))
-            .map_err(|error| internal(error.to_string()))?;
-    }
     let backup = root.join(".fork-update-backup");
     let previous = stage.path().with_extension("previous-backup");
     let created_official_plugins = ensure_official_plugins_dir(config)?;
@@ -301,6 +295,16 @@ pub(super) fn install(
             .map_err(|error| internal(format!("备份不可移动: {error}")))?;
     }
     let result = exchange(&current, &staged).and_then(|()| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            if let Err(error) =
+                fs::set_permissions(&current[FILES.len() + 1], fs::Permissions::from_mode(0o555))
+            {
+                exchange(&current, &staged)?;
+                return Err(internal(format!("保护官方插件目录失败: {error}")));
+            }
+        }
         if let Err(error) = fs::rename(stage.path(), &backup) {
             exchange(&current, &staged)?;
             return Err(internal(format!("备份提交失败: {error}")));
