@@ -333,6 +333,8 @@ impl AccountStore for PgAdminAccountStore {
                 .collect::<AdminStoreResult<_>>()?,
             next_cursor,
         })
+    }
+
     async fn load_model_observations(
         &self,
         account_ids: &[String],
