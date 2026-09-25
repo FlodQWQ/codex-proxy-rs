@@ -1124,15 +1124,19 @@ impl AccountsService for DefaultAccountsService {
             attempted += 1;
             let operation = provider
                 .connection_test_operation(&upstream_model, &challenge.prompt)
+                .await
                 .map_err(|error| map_provider_error(error, "model fingerprint probe"))?;
             let result = self
                 .probe
-                .probe(AccountProbeRequest {
-                    account_id: account_id.clone(),
-                    provider_kind: stored.account.provider_kind.clone(),
-                    upstream_model: upstream_model.clone(),
-                    operation,
-                })
+                .probe(
+                    AccountProbeRequest {
+                        account_id: account_id.clone(),
+                        provider_kind: stored.account.provider_kind.clone(),
+                        upstream_model: upstream_model.clone(),
+                        operation,
+                    },
+                    None,
+                )
                 .await;
             if let Ok(result) = result {
                 outputs.push(FingerprintOutput {
