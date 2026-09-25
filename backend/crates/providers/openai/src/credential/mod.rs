@@ -13,8 +13,6 @@ mod refresh;
 mod repository;
 mod security;
 mod selector;
-mod tickets;
-pub(crate) use tickets::CodexTicketService;
 pub mod token_client;
 mod types;
 

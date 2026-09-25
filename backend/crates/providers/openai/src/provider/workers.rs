@@ -18,32 +18,6 @@ pub(super) const WORKER_LEASE_TTL: Duration = Duration::from_secs(15 * 60);
 pub(super) const WORKER_LEASE_RENEWAL: Duration = Duration::from_secs(5 * 60);
 pub(super) const OAUTH_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
-pub(crate) fn ticket_worker(
-    tickets: Arc<crate::credential::CodexTicketService>,
-) -> Result<WorkerContribution, WorkerDefinitionError> {
-    Ok(WorkerContribution::Registration(scheduled_registration(
-        WorkerId::try_new(WorkerKind::QuotaCatalogHealth, "openai-codex-tickets")?,
-        Duration::from_secs(6),
-        Box::new(CodexTicketTask { tickets }),
-    )?))
-}
-
-struct CodexTicketTask {
-    tickets: Arc<crate::credential::CodexTicketService>,
-}
-impl ScheduledTask for CodexTicketTask {
-    fn run_cycle(&self, context: WorkerCycleContext) -> BoxFuture<'_, Result<(), WorkerTaskError>> {
-        Box::pin(async move {
-            if context.cancellation().is_cancelled() {
-                return Ok(());
-            }
-            tokio::select! {
-                _ = context.cancellation().cancelled() => Ok(()),
-                result = self.tickets.refresh() => result.map_err(|_| WorkerTaskError::safe("Codex ticket refresh failed")),
-            }
-        })
-    }
-}
 pub(super) const QUOTA_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 pub(super) const DESKTOP_RELEASE_WORKER_OWNER: &str = "openai-desktop-release";
 pub(super) const MODEL_ETAG_WORKER_OWNER: &str = "openai-model-etag";

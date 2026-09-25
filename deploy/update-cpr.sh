@@ -45,7 +45,7 @@ with tarfile.open(archive, 'r:gz') as package:
         total += member.size
         if total > 512 * 1024 * 1024 or len(seen) > 20000:
             raise SystemExit('归档超过解包限制')
-    for name in ('codex-proxy-rs', 'codex-ticket-probe', 'web/dist/index.html', 'VERSION', 'REVISION', 'plugins/official/plugin-release-manifest.json'):
+    for name in ('codex-proxy-rs', 'web/dist/index.html', 'VERSION', 'REVISION', 'plugins/official/plugin-release-manifest.json'):
         if name not in members or not members[name].isfile():
             raise SystemExit('归档缺少必要文件：' + name)
     version = package.extractfile(members['VERSION']).read(200).decode().strip()
@@ -61,10 +61,9 @@ with tarfile.open(archive, 'r:gz') as package:
     if (not isinstance(manifest, dict) or manifest.get('schema_version') != 1 or manifest.get('sealed') is not True
             or manifest.get('gateway_version') != version or manifest.get('gateway_git_sha') != revision):
         raise SystemExit('官方插件清单与产物版本或提交不匹配')
-    for name in ('codex-proxy-rs', 'codex-ticket-probe'):
-        header = package.extractfile(members[name]).read(20)
-        if header[:6] != b'\x7fELF\x02\x01' or header[18:20] != b'\x3e\x00':
-            raise SystemExit('仅支持 Linux x86_64 ELF：' + name)
+    header = package.extractfile(members['codex-proxy-rs']).read(20)
+    if header[:6] != b'\x7fELF\x02\x01' or header[18:20] != b'\x3e\x00':
+        raise SystemExit('仅支持 Linux x86_64 ELF：codex-proxy-rs')
     print(version, revision)
 PY
 )
@@ -104,7 +103,8 @@ PY
 )
 curl --noproxy '*' --fail --silent --show-error --max-time 5 "$health_url" >/dev/null
 [[ ! -L "${dropin%/*}" && ! -L "$dropin" ]] || exit 1
-targets=(codex-proxy-rs codex-ticket-probe web plugins VERSION REVISION)
+targets=(codex-proxy-rs web plugins/official VERSION REVISION)
+[[ ! -L "$app/plugins" && ( ! -e "$app/plugins" || -d "$app/plugins" ) ]] || exit 1
 for item in "${targets[@]}"; do [[ ! -L "$app/$item" ]] || exit 1; done
 if [[ -f "$app/VERSION" ]]; then
   python3 - "$app/VERSION" "$version" <<'PY'
@@ -125,7 +125,7 @@ install -d -m700 "$backup_root"
 backup=$(mktemp -d "$backup_root/update-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
 stage=$(mktemp -d "$app/.update-stage-XXXXXX")
 tar --extract --gzip --file "$archive" --directory "$stage" --no-same-owner --no-same-permissions
-chmod 755 "$stage/codex-proxy-rs" "$stage/codex-ticket-probe"
+chmod 755 "$stage/codex-proxy-rs"
 chmod -R a+rX "$stage/web"
 chmod -R a+rX "$stage/plugins"
 had_dropin=false
@@ -138,7 +138,10 @@ rollback() {
   echo "更新未完成，恢复旧文件；备份：$backup" >&2
   systemctl stop "$service" || true
   for item in "${changed[@]}"; do
-    if [[ -e "$app/$item" ]]; then mv "$app/$item" "$stage/failed-$item"; fi
+    if [[ -e "$app/$item" ]]; then
+      install -d "$(dirname "$stage/failed-$item")"
+      mv "$app/$item" "$stage/failed-$item"
+    fi
     if [[ -e "$backup/$item" ]]; then mv "$backup/$item" "$app/$item"; fi
   done
   if $had_dropin; then
@@ -154,6 +157,7 @@ rollback() {
 trap rollback ERR INT TERM
 systemctl stop "$service"
 for item in "${targets[@]}"; do
+  install -d "$(dirname "$app/$item")" "$(dirname "$backup/$item")"
   if [[ -e "$app/$item" ]]; then mv "$app/$item" "$backup/$item"; fi
   changed+=("$item")
   mv "$stage/$item" "$app/$item"

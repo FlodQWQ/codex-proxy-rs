@@ -256,10 +256,6 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
     assert!(status.need_restart);
     assert_eq!(fs::read(fixture.executable()).unwrap(), fork_elf());
     assert_eq!(
-        fs::read(fixture.root.path().join("codex-ticket-probe")).unwrap(),
-        fork_elf()
-    );
-    assert_eq!(
         fs::read_to_string(fixture.root.path().join("VERSION")).unwrap(),
         "3.12.1-fork.2"
     );
@@ -341,7 +337,6 @@ async fn fork_update_should_reject_bad_bundles_before_replacing_files() {
     for failure in [
         "checksum",
         "version",
-        "probe",
         "revision",
         "duplicate",
         "missing",
@@ -371,7 +366,7 @@ async fn fork_update_should_restore_all_files_when_a_late_swap_fails() {
     let fixture = Fixture::new();
     let server = MockServer::start().await;
     let config = mount_fork(&fixture, &server, "valid").await;
-    // 阻塞最后的目录交换，确保已换入的主程序、探针与版本元数据被恢复。
+    // 阻塞最后的目录交换，确保已换入的主程序与版本元数据被恢复。
     fs::write(
         fixture.web().with_file_name("dist.rollback-swap"),
         "blocked",
@@ -411,6 +406,7 @@ fn fork_elf() -> Vec<u8> {
 }
 
 async fn mount_fork(fixture: &Fixture, server: &MockServer, failure: &str) -> SystemUpdateConfig {
+    // 旧版本可能遗留探针；更新器不应删除或替换它。
     fs::write(fixture.root.path().join("codex-ticket-probe"), "old-probe").unwrap();
     fs::write(fixture.root.path().join("VERSION"), "3.12.1-fork.1").unwrap();
     fs::write(fixture.root.path().join("REVISION"), "a".repeat(40)).unwrap();
@@ -422,14 +418,6 @@ async fn mount_fork(fixture: &Fixture, server: &MockServer, failure: &str) -> Sy
     let mut tar = Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
     let elf = fork_elf();
     append_file(&mut tar, "./codex-proxy-rs", &elf, false);
-    if failure != "missing" {
-        append_file(
-            &mut tar,
-            "./codex-ticket-probe",
-            if failure == "probe" { b"bad" } else { &elf },
-            false,
-        );
-    }
     append_file(
         &mut tar,
         "./VERSION",
@@ -440,16 +428,18 @@ async fn mount_fork(fixture: &Fixture, server: &MockServer, failure: &str) -> Sy
         },
         false,
     );
-    append_file(
-        &mut tar,
-        "./REVISION",
-        if failure == "revision" {
-            b"bad"
-        } else {
-            b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        },
-        false,
-    );
+    if failure != "missing" {
+        append_file(
+            &mut tar,
+            "./REVISION",
+            if failure == "revision" {
+                b"bad"
+            } else {
+                b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            false,
+        );
+    }
     if failure != "modeltrace" {
         append_file(
             &mut tar,

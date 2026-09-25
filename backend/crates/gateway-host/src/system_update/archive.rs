@@ -76,7 +76,7 @@ pub(crate) fn extract_release(
 
         if matches!(
             path.to_str().map(|value| value.trim_start_matches("./")),
-            Some("codex-ticket-probe" | "VERSION" | "REVISION")
+            Some("VERSION" | "REVISION")
         ) {
             let target = temp_dir.join(path.file_name().expect("companion file"));
             if !destinations.insert(target.clone()) {

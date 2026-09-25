@@ -6,7 +6,7 @@
 ## 构建与检查
 
 `Fork Build` 对定制分支构建 Linux amd64 / Debian 12 兼容包，运行前端检查、
-Host 更新器测试、OpenAI Provider 测试（含调度、额度和打票）、手动脚本校验测试和 Go 探针测试。成功后发布到本 fork 的 GitHub Releases。
+Host 更新器测试、OpenAI Provider 测试（含调度和额度）、手动脚本校验测试。成功后发布到本 fork 的 GitHub Releases。
 从上游 v3.13.1 起版本为 `上游版本-Flod-fork.N`，N 在 Fork Build 工作流中显式递增；旧版本为
 `上游版本-fork.N`，N 使用工作流运行编号。发布仅来自 `cpr-custom`，标为
 Pre-release，不覆盖 GitHub Latest，也不发布或覆盖 Docker 镜像。
@@ -15,11 +15,11 @@ Pre-release，不覆盖 GitHub Latest，也不发布或覆盖 Docker 镜像。
 `Flod-fork.N` 不回退到旧 `fork.N` 命名。
 不会切换到官方、alpha/beta/rc/exp 通道，不接受降级或跨大版本更新。
 检查失败与无更新分开报告。Linux x86_64 二进制部署支持网页“立即更新”，
-下载完整归档并校验 SHA256SUMS、VERSION、REVISION、主程序和探针平台后，
-一起替换主程序、`codex-ticket-probe`、前端及版本元数据；完成后点击“重启服务”生效。
+下载完整归档并校验 SHA256SUMS、VERSION、REVISION、主程序平台后，
+一起替换主程序、前端、官方插件清单及版本元数据；完成后点击“重启服务”生效。
 替换失败时恢复已交换的文件；重启后的业务健康仍需检查，在线更新不提供数据库回滚或启动失败自动回滚。
 
-在线更新要求主程序位于安装根目录、前端位于同目录 `web/dist`，现有探针及版本文件完整。
+在线更新要求主程序位于安装根目录、前端位于同目录 `web/dist`，版本文件完整；旧版本遗留的探针文件不会被更新器删除或替换。
 服务用户需要安装目录和 `web` 目录的写权限，systemd 的 `ReadWritePaths` 也必须允许该目录；
 不需要授予服务 root 或 sudo 权限。配置文件及其他应用目录不应改为可写。
 启用 `CPR_ENABLE_SELF_RESTART=true`；由 `Restart=always` 的 systemd 托管时，另设
@@ -73,7 +73,7 @@ sudo bash update-cpr.sh --apply codex-proxy-rs-linux-amd64.tar.gz SHA256SUMS
 脚本针对当前 la dmit：`/opt/codex-proxy-rs`、`cpr.service`、Linux x86_64。
 要求 Python 3.11+、python3-yaml、curl、tar、flock 和 systemd；不自动安装依赖。
 它只使用本地附件，不下载、不拉取分支、不自动升级系统。
-检查通过后会短暂停止服务，替换主程序、探针、`web`、`VERSION` 和 `REVISION`，
+检查通过后会短暂停止服务，替换主程序、`web`、`plugins/official`、`VERSION` 和 `REVISION`，保留 `plugins` 目录下其他内容，
 并写入专用 systemd drop-in 固定 `CPR_UPDATE_REPOSITORY=FlodQWQ/codex-proxy-rs`。
 启动后验证本机 `/healthz`，失败尝试恢复旧文件及 drop-in；退出后仍应人工确认业务请求。
 

@@ -10,12 +10,7 @@ use super::state::UpdateTempDir;
 use super::swap::{copy_dir_all, swap_dir, swap_file};
 use super::{OperationError, SystemUpdateConfig, conflict, internal, invalid};
 
-const FILES: [&str; 4] = [
-    "codex-proxy-rs",
-    "codex-ticket-probe",
-    "VERSION",
-    "REVISION",
-];
+const FILES: [&str; 3] = ["codex-proxy-rs", "VERSION", "REVISION"];
 
 fn targets(
     config: &SystemUpdateConfig,
@@ -28,7 +23,7 @@ fn targets(
     if executable.file_name().is_none_or(|name| name != FILES[0])
         || config.web_dist_dir()? != root.join("web/dist")
     {
-        return Err(conflict("定制包需要同目录的主程序、探针及 web/dist 布局"));
+        return Err(conflict("定制包需要同目录的主程序及 web/dist 布局"));
     }
     let mut paths = vec![executable.clone()];
     paths.extend(FILES[1..].iter().map(|name| root.join(name)));
@@ -112,7 +107,7 @@ fn elf(path: &Path) -> Result<(), OperationError> {
         .and_then(|mut file| file.read_exact(&mut header))
         .map_err(|error| invalid(format!("invalid ELF: {error}")))?;
     if &header[..6] != b"\x7fELF\x02\x01" || header[18..20] != [0x3e, 0] {
-        return Err(invalid("定制包必须包含 Linux x86_64 主程序与探针"));
+        return Err(invalid("定制包必须包含 Linux x86_64 主程序"));
     }
     Ok(())
 }
@@ -225,8 +220,8 @@ pub(super) fn install(
     let current = targets(config, false)?;
     let root = current[0].parent().expect("validated root");
     let source_root = extracted.binary_path.parent().expect("extracted root");
-    if extracted.companions.len() != 3 {
-        return Err(invalid("定制包缺少探针、VERSION 或 REVISION"));
+    if extracted.companions.len() != 2 {
+        return Err(invalid("定制包缺少 VERSION 或 REVISION"));
     }
     let package_version = fs::read_to_string(source_root.join("VERSION"))
         .map_err(|error| invalid(error.to_string()))?;
@@ -239,7 +234,6 @@ pub(super) fn install(
         return Err(invalid("定制包版本或提交号不匹配"));
     }
     elf(&extracted.binary_path)?;
-    elf(&source_root.join("codex-ticket-probe"))?;
     let web = extracted
         .web_dist_dir
         .ok_or_else(|| invalid("定制包缺少前端"))?;

@@ -117,11 +117,6 @@ jobs:
             rust:1.98-bookworm@sha256:828077e0f5ed0401fbd9cb5b4d5dedca23bd13c7fe032f3e8b7313e7acd2a57f \
             sh -c 'cargo +1.98.0 build --release --locked --bin codex-proxy-rs && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-host --test main system_update && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p provider-openai --test main && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-api --test main admin::accounts && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-api --test main chat_completions && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-api --lib user_cost_tests && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-admin --test main use_case::accounts && RUST_MIN_STACK=16777216 cargo +1.98.0 test --release --locked -p gateway-store --test main postgres::provider_accounts'
           install -m755 backend/target/release/codex-proxy-rs dist/codex-proxy-rs
-          cd backend/crates/providers/openai/ticket-probe
-          GOTOOLCHAIN=go1.27.0 CGO_ENABLED=0 go test ./...
-          GOTOOLCHAIN=go1.27.0 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../../../../../dist/codex-ticket-probe .
-          cd ../../../../..
-          cp -a backend/crates/providers/openai/ticket-probe dist/ticket-probe-source
           mkdir -p dist/modeltrace
           cp -a "$RUNNER_TEMP/modeltrace/." dist/modeltrace/
           printf '%s\n' "$MODELTRACE_REVISION" > dist/modeltrace/.git/CPR_REVISION

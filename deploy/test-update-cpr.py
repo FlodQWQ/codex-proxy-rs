@@ -19,7 +19,6 @@ class ManualUpdaterTests(unittest.TestCase):
             package = root / 'codex-proxy-rs-linux-amd64.tar.gz'
             files = {
                 'codex-proxy-rs': ELF,
-                'codex-ticket-probe': ELF,
                 'web/dist/index.html': b'web',
                 'VERSION': b'3.13.1-Flod-fork.1\n',
                 'REVISION': b'a' * 40 + b'\n',
@@ -70,8 +69,8 @@ class ManualUpdaterTests(unittest.TestCase):
     def test_symlink_is_rejected(self):
         self.assertNotEqual(self.check_package(lambda files: files.update({'link': None})).returncode, 0)
 
-    def test_missing_probe_is_rejected(self):
-        self.assertNotEqual(self.check_package(lambda files: files.pop('codex-ticket-probe')).returncode, 0)
+    def test_missing_revision_is_rejected(self):
+        self.assertNotEqual(self.check_package(lambda files: files.pop('REVISION')).returncode, 0)
 
     def test_missing_plugin_manifest_is_rejected(self):
         self.assertNotEqual(self.check_package(lambda files: files.pop('plugins/official/plugin-release-manifest.json')).returncode, 0)

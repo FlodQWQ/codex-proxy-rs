@@ -1601,6 +1601,7 @@ impl From<CredentialRepositoryError> for CredentialSelectionError {
     fn from(error: CredentialRepositoryError) -> Self {
         match error {
             CredentialRepositoryError::InvalidCredentialData => Self::InvalidCredential,
+            CredentialRepositoryError::CookiePolicy(_) => Self::CookiePolicy,
             CredentialRepositoryError::RevisionConflict | CredentialRepositoryError::Store => {
                 Self::Store
             }
