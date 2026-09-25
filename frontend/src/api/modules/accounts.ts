@@ -28,6 +28,13 @@ export interface AccountQuotaWindow {
   resetAtDisplay: string
 }
 
+export interface AccountQuotaCredits {
+  hasCredits: boolean | null
+  unlimited: boolean | null
+  balance: string | null
+  balanceDisplay: string
+}
+
 export interface AccountQuota {
   refreshedAtDisplay: string
   limitReached: boolean
@@ -35,7 +42,20 @@ export interface AccountQuota {
   rateLimitedUntil: string | null
   rateLimitReason: 'upstream_rate_limit' | 'capacity_freeze' | null
   recoveryProbeRequired: boolean
+  credits: AccountQuotaCredits | null
   windows: AccountQuotaWindow[]
+}
+
+export interface AccountModelDegradation {
+  status: 'degraded' | 'mitigated'
+  requestId: string
+  routingScope: string
+  groupIds: string[]
+  sentModel: string
+  responseModel: string
+  detectedAt: string
+  expiresAt: string
+  recoveredAt: string | null
 }
 
 export interface AccountCurrencyCost {
@@ -120,6 +140,7 @@ export interface AccountModelAccess {
 
 export interface Account {
   capabilities: AccountCapabilities
+  modelDegradation: AccountModelDegradation[]
   outboundProxyEndpoint: string | null
   id: string
   name: string

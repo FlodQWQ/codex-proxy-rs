@@ -5,11 +5,7 @@ import { Fingerprint, RefreshCw } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
 import { getAccounts } from '@/api'
 import { getFingerprintModels, testAccountFingerprint } from '@/api/modules/model-fingerprint'
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
-import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
-import BaseModal from '@/components/base/BaseModal/index.vue'
-import BaseSelect from '@/components/base/BaseSelect.vue'
+import { BaseButton, BaseCheckbox, BaseFormItem, BaseModal, BaseSelect } from '@codex-proxy/ui'
 
 type FingerprintResult = ModelFingerprintTestResult & { error?: string }
 

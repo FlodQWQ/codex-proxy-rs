@@ -3,7 +3,7 @@ import type { TicketAccount, TicketModel } from '@/api/modules/codex-tickets'
 import { ChevronRight } from '@lucide/vue'
 import { useIntervalFn, useNow } from '@vueuse/core'
 import { computed, ref } from 'vue'
-import BaseModal from '@/components/base/BaseModal/index.vue'
+import { BaseModal } from '@codex-proxy/ui'
 
 const props = defineProps<{ account: TicketAccount, enabled: boolean, error: boolean }>()
 const now = useNow({ scheduler: callback => useIntervalFn(callback, 1000) })

@@ -4,14 +4,7 @@ import { RefreshCw } from '@lucide/vue'
 import { onScopeDispose, ref, watch } from 'vue'
 import { getAccounts } from '@/api'
 import request from '@/api/request'
-import BaseButton from '@/components/base/BaseButton.vue'
-import BaseCheckbox from '@/components/base/BaseCheckbox.vue'
-import BaseFormItem from '@/components/base/BaseForm/FormItem.vue'
-import BaseIconButton from '@/components/base/BaseIconButton.vue'
-import BaseInput from '@/components/base/BaseInput.vue'
-import BaseModal from '@/components/base/BaseModal/index.vue'
-import BaseSwitch from '@/components/base/BaseSwitch.vue'
-import { toast } from '@/components/base/BaseToast'
+import { BaseButton, BaseCheckbox, BaseFormItem, BaseIconButton, BaseInput, BaseModal, BaseSwitch, toast } from '@codex-proxy/ui'
 
 const emit = defineEmits<{ saved: [] }>()
 const open = defineModel<boolean>({ required: true })
