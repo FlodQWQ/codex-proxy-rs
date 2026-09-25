@@ -47,6 +47,23 @@ impl ProviderCredentials {
             snapshot,
         }
     }
+
+    pub async fn codex_tickets(&self) -> Result<serde_json::Value, AdminError> {
+        self.provider
+            .codex_tickets()
+            .await
+            .map_err(|error| map_provider_error(error, "Codex tickets"))
+    }
+
+    pub async fn update_codex_tickets(
+        &self,
+        settings: serde_json::Value,
+    ) -> Result<serde_json::Value, AdminError> {
+        self.provider
+            .update_codex_tickets(settings)
+            .await
+            .map_err(|error| map_provider_error(error, "Codex ticket settings"))
+    }
     pub async fn import_document(
         &self,
         command: ImportCredentials,
