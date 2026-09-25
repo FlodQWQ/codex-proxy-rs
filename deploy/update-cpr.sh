@@ -17,7 +17,7 @@ dropin=/etc/systemd/system/cpr.service.d/90-fork-update-source.conf
 
 # 不信任归档成员、文件名或校验清单中的路径；只接受普通文件和目录。
 metadata=$(python3 - "$archive" "$checksums" <<'PY'
-import hashlib, pathlib, re, sys, tarfile
+import hashlib, json, pathlib, re, sys, tarfile
 archive, sums = map(pathlib.Path, sys.argv[1:])
 entries = [line.split() for line in sums.read_text().splitlines() if line.strip()]
 matches = [parts[0] for parts in entries if len(parts) == 2 and parts[1].lstrip('*') == archive.name]
@@ -45,7 +45,7 @@ with tarfile.open(archive, 'r:gz') as package:
         total += member.size
         if total > 512 * 1024 * 1024 or len(seen) > 20000:
             raise SystemExit('归档超过解包限制')
-    for name in ('codex-proxy-rs', 'codex-ticket-probe', 'web/dist/index.html', 'VERSION', 'REVISION'):
+    for name in ('codex-proxy-rs', 'codex-ticket-probe', 'web/dist/index.html', 'VERSION', 'REVISION', 'plugins/official/plugin-release-manifest.json'):
         if name not in members or not members[name].isfile():
             raise SystemExit('归档缺少必要文件：' + name)
     version = package.extractfile(members['VERSION']).read(200).decode().strip()
@@ -54,6 +54,13 @@ with tarfile.open(archive, 'r:gz') as package:
         raise SystemExit('只接受 v3 Flod-fork.N 产物')
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise SystemExit('提交号无效')
+    manifest_member = members['plugins/official/plugin-release-manifest.json']
+    if not 0 < manifest_member.size <= 256 * 1024:
+        raise SystemExit('官方插件清单大小无效')
+    manifest = json.load(package.extractfile(manifest_member))
+    if (not isinstance(manifest, dict) or manifest.get('schema_version') != 1 or manifest.get('sealed') is not True
+            or manifest.get('gateway_version') != version or manifest.get('gateway_git_sha') != revision):
+        raise SystemExit('官方插件清单与产物版本或提交不匹配')
     for name in ('codex-proxy-rs', 'codex-ticket-probe'):
         header = package.extractfile(members[name]).read(20)
         if header[:6] != b'\x7fELF\x02\x01' or header[18:20] != b'\x3e\x00':
@@ -97,7 +104,7 @@ PY
 )
 curl --noproxy '*' --fail --silent --show-error --max-time 5 "$health_url" >/dev/null
 [[ ! -L "${dropin%/*}" && ! -L "$dropin" ]] || exit 1
-targets=(codex-proxy-rs codex-ticket-probe web VERSION REVISION)
+targets=(codex-proxy-rs codex-ticket-probe web plugins VERSION REVISION)
 for item in "${targets[@]}"; do [[ ! -L "$app/$item" ]] || exit 1; done
 if [[ -f "$app/VERSION" ]]; then
   python3 - "$app/VERSION" "$version" <<'PY'
@@ -120,6 +127,7 @@ stage=$(mktemp -d "$app/.update-stage-XXXXXX")
 tar --extract --gzip --file "$archive" --directory "$stage" --no-same-owner --no-same-permissions
 chmod 755 "$stage/codex-proxy-rs" "$stage/codex-ticket-probe"
 chmod -R a+rX "$stage/web"
+chmod -R a+rX "$stage/plugins"
 had_dropin=false
 if [[ -f "$dropin" ]]; then cp -a "$dropin" "$backup/update-source.conf"; had_dropin=true; fi
 changed=()

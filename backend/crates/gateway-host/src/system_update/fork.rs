@@ -17,7 +17,10 @@ const FILES: [&str; 4] = [
     "REVISION",
 ];
 
-fn targets(config: &SystemUpdateConfig) -> Result<Vec<PathBuf>, OperationError> {
+fn targets(
+    config: &SystemUpdateConfig,
+    require_official_plugins: bool,
+) -> Result<Vec<PathBuf>, OperationError> {
     let executable = config.executable_path()?;
     let root = executable
         .parent()
@@ -30,15 +33,26 @@ fn targets(config: &SystemUpdateConfig) -> Result<Vec<PathBuf>, OperationError> 
     let mut paths = vec![executable.clone()];
     paths.extend(FILES[1..].iter().map(|name| root.join(name)));
     paths.push(config.web_dist_dir()?.to_owned());
+    paths.push(config.official_plugins_dir()?);
     for (index, path) in paths.iter().enumerate() {
-        let metadata = fs::symlink_metadata(path).map_err(|error| {
-            conflict(format!(
-                "定制包当前文件不可访问 {}: {error}",
-                path.display()
-            ))
-        })?;
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error)
+                if !require_official_plugins
+                    && index + 1 == paths.len()
+                    && error.kind() == io::ErrorKind::NotFound =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(conflict(format!(
+                    "定制包当前文件不可访问 {}: {error}",
+                    path.display()
+                )));
+            }
+        };
         if metadata.file_type().is_symlink()
-            || (index == FILES.len() && !metadata.is_dir())
+            || (index >= FILES.len() && !metadata.is_dir())
             || (index < FILES.len() && !metadata.is_file())
         {
             return Err(conflict("定制包当前文件类型不安全"));
@@ -47,10 +61,47 @@ fn targets(config: &SystemUpdateConfig) -> Result<Vec<PathBuf>, OperationError> 
     Ok(paths)
 }
 
+fn ensure_official_plugins_dir(config: &SystemUpdateConfig) -> Result<bool, OperationError> {
+    let official = config.official_plugins_dir()?;
+    let parent = official
+        .parent()
+        .ok_or_else(|| invalid("missing official plugin parent directory"))?;
+    match fs::symlink_metadata(parent) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(conflict("定制包官方插件父目录类型不安全"));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir(parent).map_err(|error| {
+                internal(format!(
+                    "failed to create official plugin parent directory: {error}"
+                ))
+            })?;
+        }
+        Err(error) => {
+            return Err(conflict(format!("定制包官方插件父目录不可访问: {error}")));
+        }
+    }
+    match fs::symlink_metadata(&official) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(conflict("定制包官方插件目录类型不安全"))
+        }
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir(&official).map(|()| true).map_err(|error| {
+                internal(format!(
+                    "failed to create official plugin directory: {error}"
+                ))
+            })
+        }
+        Err(error) => Err(conflict(format!("定制包官方插件目录不可访问: {error}"))),
+    }
+}
+
 fn bundle_paths(root: &Path) -> Vec<PathBuf> {
     FILES
         .iter()
-        .chain(std::iter::once(&"web-dist"))
+        .chain(["web-dist", "plugins/official"].iter())
         .map(|name| root.join(name))
         .collect()
 }
@@ -68,13 +119,13 @@ fn elf(path: &Path) -> Result<(), OperationError> {
 
 fn exchange(current: &[PathBuf], replacement: &[PathBuf]) -> Result<(), OperationError> {
     for index in 0..current.len() {
-        if let Err(error) = swap(&current[index], &replacement[index], index == FILES.len()) {
+        if let Err(error) = swap(&current[index], &replacement[index], index >= FILES.len()) {
             let mut failures = Vec::new();
             for previous in (0..index).rev() {
                 if let Err(error) = swap(
                     &current[previous],
                     &replacement[previous],
-                    previous == FILES.len(),
+                    previous >= FILES.len(),
                 ) {
                     failures.push(error.to_string());
                 }
@@ -118,17 +169,13 @@ fn modeltrace_revision(path: &Path) -> Option<String> {
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()?;
-    output.status.success().then(|| {
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_owned()
-    })
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn install_modeltrace(
-    runtime_data_dir: &Path,
-    source: &Path,
-) -> Result<(), OperationError> {
+fn install_modeltrace(runtime_data_dir: &Path, source: &Path) -> Result<(), OperationError> {
     if !valid_modeltrace_tree(source)
         || modeltrace_revision(source).as_deref() != Some(MODELTRACE_REVISION)
     {
@@ -139,7 +186,9 @@ fn install_modeltrace(
     let runtime_metadata = fs::symlink_metadata(runtime_data_dir)
         .map_err(|error| internal(format!("failed to inspect runtime data: {error}")))?;
     if runtime_metadata.file_type().is_symlink() || !runtime_metadata.is_dir() {
-        return Err(conflict("runtime data directory is not a regular directory"));
+        return Err(conflict(
+            "runtime data directory is not a regular directory",
+        ));
     }
 
     let target = runtime_data_dir.join("modeltrace");
@@ -173,7 +222,7 @@ pub(super) fn install(
     extracted: ExtractedRelease,
     version: &str,
 ) -> Result<(), OperationError> {
-    let current = targets(config)?;
+    let current = targets(config, false)?;
     let root = current[0].parent().expect("validated root");
     let source_root = extracted.binary_path.parent().expect("extracted root");
     if extracted.companions.len() != 3 {
@@ -194,6 +243,18 @@ pub(super) fn install(
     let web = extracted
         .web_dist_dir
         .ok_or_else(|| invalid("定制包缺少前端"))?;
+    let official_plugins = extracted.official_plugins_dir;
+    let manifest = official_plugins.join("plugin-release-manifest.json");
+    let official_metadata = fs::symlink_metadata(&official_plugins)
+        .map_err(|error| invalid(format!("定制包缺少官方插件目录: {error}")))?;
+    if official_metadata.file_type().is_symlink() || !official_metadata.is_dir() {
+        return Err(invalid("定制包官方插件目录类型不安全"));
+    }
+    let manifest_metadata = fs::symlink_metadata(&manifest)
+        .map_err(|error| invalid(format!("定制包缺少官方插件清单: {error}")))?;
+    if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
+        return Err(invalid("定制包官方插件清单类型不安全"));
+    }
     let modeltrace = extracted
         .modeltrace_dir
         .ok_or_else(|| invalid("定制包缺少 ModelTrace 指纹库"))?;
@@ -225,8 +286,17 @@ pub(super) fn install(
         }
     }
     copy_dir_all(&web, &staged[FILES.len()]).map_err(|error| internal(error.to_string()))?;
+    copy_dir_all(&official_plugins, &staged[FILES.len() + 1])
+        .map_err(|error| internal(error.to_string()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&staged[FILES.len() + 1], fs::Permissions::from_mode(0o555))
+            .map_err(|error| internal(error.to_string()))?;
+    }
     let backup = root.join(".fork-update-backup");
     let previous = stage.path().with_extension("previous-backup");
+    let created_official_plugins = ensure_official_plugins_dir(config)?;
     let had_backup = backup.exists();
     if had_backup {
         fs::rename(&backup, &previous)
@@ -246,12 +316,21 @@ pub(super) fn install(
             fs::rename(&previous, &backup)
                 .map_err(|error| internal(format!("旧备份恢复失败: {error}")))?;
         }
+        if created_official_plugins {
+            let official = config.official_plugins_dir()?;
+            if fs::read_dir(&official)
+                .ok()
+                .is_some_and(|mut entries| entries.next().is_none())
+            {
+                let _ = fs::remove_dir(&official);
+            }
+        }
     }
     result
 }
 
 pub(super) fn rollback(config: &SystemUpdateConfig) -> Result<(), OperationError> {
-    let current = targets(config)?;
+    let current = targets(config, true)?;
     let backup = current[0]
         .parent()
         .expect("validated root")
@@ -261,10 +340,20 @@ pub(super) fn rollback(config: &SystemUpdateConfig) -> Result<(), OperationError
         let metadata = fs::symlink_metadata(path).map_err(|_| conflict("没有完整的定制包备份"))?;
         if metadata.file_type().is_symlink()
             || (index < FILES.len() && !metadata.is_file())
-            || (index == FILES.len() && !metadata.is_dir())
+            || (index >= FILES.len() && !metadata.is_dir())
         {
             return Err(conflict("定制包备份不完整"));
         }
     }
     exchange(&current, &replacements)
+}
+
+pub(super) fn rollback_official_plugins_dir(
+    config: &SystemUpdateConfig,
+) -> Result<PathBuf, OperationError> {
+    let executable = config.executable_path()?;
+    let root = executable
+        .parent()
+        .ok_or_else(|| invalid("missing install directory"))?;
+    Ok(root.join(".fork-update-backup/plugins/official"))
 }

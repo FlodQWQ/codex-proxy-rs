@@ -182,7 +182,7 @@ async fn fork_checks_should_use_only_fork_releases() {
         if !allowed {
             assert!(
                 service
-                    .perform_update(Some(target.to_owned()))
+                    .perform_update(Some(target.to_owned()), Arc::new(AllowingUpdatePreflight))
                     .await
                     .is_err()
             );
@@ -267,6 +267,10 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
         fs::read_to_string(fixture.web().join("index.html")).unwrap(),
         "new-web"
     );
+    assert_eq!(
+        fs::read(fixture.official().join("plugin-release-manifest.json")).unwrap(),
+        b"fork-manifest"
+    );
     assert!(
         fixture
             .root
@@ -276,18 +280,59 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
     );
     assert!(
         service
-            .perform_update(Some("3.12.1-fork.3".to_owned()))
+            .perform_update(
+                Some("3.12.1-fork.3".to_owned()),
+                Arc::new(AllowingUpdatePreflight),
+            )
             .await
             .is_err()
     );
-    service.rollback().await.expect("whole bundle rollback");
+    service
+        .rollback(Arc::new(AllowingUpdatePreflight))
+        .await
+        .expect("whole bundle rollback");
     assert_fork_unchanged(&fixture);
+    assert_eq!(
+        fs::read(fixture.official().join("plugin-release-manifest.json")).unwrap(),
+        b"old-manifest"
+    );
     assert!(
         fixture
             .root
             .path()
             .join("runtime-data/modeltrace/data/unified_bank.json")
             .is_file()
+    );
+}
+
+#[tokio::test]
+async fn fork_update_should_migrate_a_release_without_official_plugins() {
+    let fixture = Fixture::new();
+    fs::remove_dir_all(fixture.official()).expect("remove old official plugins");
+    let server = MockServer::start().await;
+    let config = mount_fork(&fixture, &server, "valid").await;
+    let service = ProcessSystemOperations::new(CancellationToken::new(), config);
+
+    assert_eq!(
+        complete_update(&service, "3.12.1-fork.2")
+            .await
+            .operation
+            .status,
+        SystemOperationStatus::Succeeded
+    );
+    assert_eq!(
+        fs::read(fixture.official().join("plugin-release-manifest.json")).unwrap(),
+        b"fork-manifest"
+    );
+
+    let error = service
+        .rollback(Arc::new(AllowingUpdatePreflight))
+        .await
+        .expect_err("rollback needs a complete plugin manifest backup");
+    assert_eq!(error.kind(), SystemOperationErrorKind::Invalid);
+    assert_eq!(
+        fs::read(fixture.official().join("plugin-release-manifest.json")).unwrap(),
+        b"fork-manifest"
     );
 }
 
@@ -303,6 +348,7 @@ async fn fork_update_should_reject_bad_bundles_before_replacing_files() {
         "web",
         "modeltrace",
         "modeltrace_revision",
+        "manifest",
         "symlink",
     ] {
         let fixture = Fixture::new();
@@ -415,7 +461,12 @@ async fn mount_fork(fixture: &Fixture, server: &MockServer, failure: &str) -> Sy
             },
             false,
         );
-        append_file(&mut tar, "./modeltrace/.git/HEAD", b"ref: refs/heads/main\n", false);
+        append_file(
+            &mut tar,
+            "./modeltrace/.git/HEAD",
+            b"ref: refs/heads/main\n",
+            false,
+        );
         append_file(&mut tar, "./modeltrace/challenge_suite.py", b"", false);
         append_file(&mut tar, "./modeltrace/fingerprint.py", b"", false);
         append_file(
@@ -428,6 +479,20 @@ async fn mount_fork(fixture: &Fixture, server: &MockServer, failure: &str) -> Sy
     if failure != "web" {
         append_file(&mut tar, "./web/dist/index.html", b"new-web", false);
     }
+    if failure != "manifest" {
+        append_file(
+            &mut tar,
+            "./plugins/official/plugin-release-manifest.json",
+            b"fork-manifest",
+            false,
+        );
+    }
+    append_file(
+        &mut tar,
+        "./plugins/official/fork-plugin.tar.gz",
+        b"fork-plugin",
+        false,
+    );
     if failure == "duplicate" {
         append_file(&mut tar, "VERSION", b"3.12.1-fork.2", false);
     }

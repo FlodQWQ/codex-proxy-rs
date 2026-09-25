@@ -1,6 +1,7 @@
 """离线验证手动升级脚本；不执行 --apply，不接触部署或 systemd。"""
 import hashlib
 import io
+import json
 from pathlib import Path
 import subprocess
 import tarfile
@@ -22,6 +23,14 @@ class ManualUpdaterTests(unittest.TestCase):
                 'web/dist/index.html': b'web',
                 'VERSION': b'3.13.1-Flod-fork.1\n',
                 'REVISION': b'a' * 40 + b'\n',
+                'plugins/official/plugin-release-manifest.json': json.dumps({
+                    'schema_version': 1,
+                    'sealed': True,
+                    'gateway_version': '3.13.1-Flod-fork.1',
+                    'gateway_git_sha': 'a' * 40,
+                    'plugin_host': {},
+                    'plugins': [],
+                }).encode(),
             }
             if change:
                 change(files)
@@ -63,6 +72,19 @@ class ManualUpdaterTests(unittest.TestCase):
 
     def test_missing_probe_is_rejected(self):
         self.assertNotEqual(self.check_package(lambda files: files.pop('codex-ticket-probe')).returncode, 0)
+
+    def test_missing_plugin_manifest_is_rejected(self):
+        self.assertNotEqual(self.check_package(lambda files: files.pop('plugins/official/plugin-release-manifest.json')).returncode, 0)
+
+    def test_plugin_manifest_identity_mismatch_is_rejected(self):
+        self.assertNotEqual(self.check_package(lambda files: files.update({
+            'plugins/official/plugin-release-manifest.json': json.dumps({
+                'schema_version': 1,
+                'sealed': True,
+                'gateway_version': '3.13.1-Flod-fork.2',
+                'gateway_git_sha': 'a' * 40,
+            }).encode(),
+        })).returncode, 0)
 
     def test_official_version_is_rejected(self):
         self.assertNotEqual(self.check_package(lambda files: files.update(VERSION=b'3.12.1')).returncode, 0)

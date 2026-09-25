@@ -128,6 +128,26 @@ jobs:
           cp -a frontend/dist dist/web/dist
           printf '%s\n' "$GITHUB_SHA" > dist/REVISION
           printf '%s\n' "$version" > dist/VERSION
+          mkdir -p dist/plugins/official
+          CPR_FORK_VERSION="$version" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          plugin_host = json.loads(Path('backend/crates/gateway-plugin/runtime/plugin-host-compatibility.json').read_text())
+          manifest = {
+              'schema_version': 1,
+              'sealed': True,
+              'gateway_version': os.environ['CPR_FORK_VERSION'],
+              'gateway_git_sha': os.environ['GITHUB_SHA'],
+              'plugin_host': plugin_host,
+              'plugins': [],
+          }
+          Path('dist/plugins/official/plugin-release-manifest.json').write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+          chmod 444 dist/plugins/official/plugin-release-manifest.json
           mkdir -p dist/deploy
           cp deploy/update-cpr.sh dist/deploy/update-cpr.sh
           cp deploy/migrate-cpr-config.py dist/deploy/migrate-cpr-config.py

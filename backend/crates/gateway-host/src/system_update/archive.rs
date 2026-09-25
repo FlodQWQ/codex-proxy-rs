@@ -126,7 +126,9 @@ pub(crate) fn extract_release(
             }
             let target = modeltrace_dir.join(relative);
             if !destinations.insert(target.clone()) {
-                return Err(invalid("release archive contains duplicate ModelTrace files"));
+                return Err(invalid(
+                    "release archive contains duplicate ModelTrace files",
+                ));
             }
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|error| {
@@ -194,8 +196,10 @@ fn modeltrace_relative_path(path: &Path) -> Option<PathBuf> {
             _ => None,
         })
         .collect::<Vec<_>>();
-    (components.first().is_some_and(|value| value == "modeltrace"))
-        .then(|| components[1..].iter().collect())
+    (components
+        .first()
+        .is_some_and(|value| value == "modeltrace"))
+    .then(|| components[1..].iter().collect())
 }
 
 fn web_dist_relative_path(path: &Path) -> Option<PathBuf> {
