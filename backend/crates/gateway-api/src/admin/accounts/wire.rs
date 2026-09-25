@@ -327,6 +327,7 @@ impl From<gateway_admin::model::accounts::ProviderAccountCapabilities> for Accou
             avatar: value.avatar,
             reset_credits: value.reset_credits,
             consume_reset_credit: value.consume_reset_credit,
+        }
     }
 }
 
