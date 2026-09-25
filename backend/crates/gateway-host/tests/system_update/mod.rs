@@ -252,7 +252,12 @@ async fn fork_update_should_install_and_rollback_the_complete_bundle() {
     let config = mount_fork(&fixture, &server, "valid").await;
     let service = ProcessSystemOperations::new(CancellationToken::new(), config);
     let status = complete_update(&service, "3.12.1-fork.2").await;
-    assert_eq!(status.operation.status, SystemOperationStatus::Succeeded);
+    assert_eq!(
+        status.operation.status,
+        SystemOperationStatus::Succeeded,
+        "{:?}",
+        status.operation.error
+    );
     assert!(status.need_restart);
     assert_eq!(fs::read(fixture.executable()).unwrap(), fork_elf());
     assert_eq!(
@@ -309,12 +314,12 @@ async fn fork_update_should_migrate_a_release_without_official_plugins() {
     let config = mount_fork(&fixture, &server, "valid").await;
     let service = ProcessSystemOperations::new(CancellationToken::new(), config);
 
+    let status = complete_update(&service, "3.12.1-fork.2").await;
     assert_eq!(
-        complete_update(&service, "3.12.1-fork.2")
-            .await
-            .operation
-            .status,
-        SystemOperationStatus::Succeeded
+        status.operation.status,
+        SystemOperationStatus::Succeeded,
+        "{:?}",
+        status.operation.error
     );
     assert_eq!(
         fs::read(fixture.official().join("plugin-release-manifest.json")).unwrap(),
