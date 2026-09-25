@@ -263,16 +263,24 @@ pub(super) fn swap_dir(current: &Path, backup: &Path) -> io::Result<()> {
     if swap.exists() {
         remove_dir_all(&swap)?;
     }
-    move_dir(current, &swap)?;
+    move_dir(current, &swap).map_err(|error| {
+        io::Error::new(error.kind(), format!("move current directory aside: {error}"))
+    })?;
     if let Err(error) = move_dir(backup, current) {
         let _ = move_dir(&swap, current);
-        return Err(error);
+        return Err(io::Error::new(
+            error.kind(),
+            format!("move replacement directory into place: {error}"),
+        ));
     }
     if let Err(error) = move_dir(&swap, backup) {
         let _ = move_dir(current, &swap);
         let _ = move_dir(backup, current);
         let _ = move_dir(&swap, backup);
-        return Err(error);
+        return Err(io::Error::new(
+            error.kind(),
+            format!("move previous directory to backup: {error}"),
+        ));
     }
     Ok(())
 }
