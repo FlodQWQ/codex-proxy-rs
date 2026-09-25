@@ -86,11 +86,12 @@ async fn codex_tickets<S>(
 where
     S: SessionState + Send + Sync,
 {
-    let provider = ProviderKind::new("openai").map_err(|_| AdminError::internal("OpenAI Provider 不可用"))?;
+    let provider = ProviderKind::new("openai").map_err(|_| AdminError::internal())?;
     let result = state
         .admin_services()
         .credentials()
-        .for_provider(&provider)?
+        .for_provider(&provider)
+        .map_err(map_service_error)?
         .codex_tickets()
         .await
         .map_err(map_service_error)?;
@@ -108,11 +109,12 @@ async fn update_codex_tickets<S>(
 where
     S: SessionState + Send + Sync,
 {
-    let provider = ProviderKind::new("openai").map_err(|_| AdminError::internal("OpenAI Provider 不可用"))?;
+    let provider = ProviderKind::new("openai").map_err(|_| AdminError::internal())?;
     let result = state
         .admin_services()
         .credentials()
-        .for_provider(&provider)?
+        .for_provider(&provider)
+        .map_err(map_service_error)?
         .update_codex_tickets(settings)
         .await
         .map_err(map_service_error)?;

@@ -749,7 +749,7 @@ impl MiddlewareBody for ChatCompletionBody {
                     if frame.framing() != MiddlewareFraming::JsonDocument || !frame.terminal() {
                         return Err(MiddlewareError::InvalidState);
                     }
-                    let response = serde_json::from_slice(frame.bytes())
+                    let response: serde_json::Value = serde_json::from_slice(frame.bytes())
                         .map_err(|_| MiddlewareError::InvalidState)?;
                     if !response.is_object() {
                         return Err(MiddlewareError::InvalidState);
